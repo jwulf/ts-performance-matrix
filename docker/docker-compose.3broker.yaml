@@ -1,0 +1,70 @@
+# Three-broker cluster for performance matrix benchmarking
+# 3 brokers with embedded gateways, 3 partitions, RF 3
+# Usage: docker compose -f docker/docker-compose.3broker.yaml up -d
+#
+# Endpoints (via broker0):
+#   REST API:   http://localhost:8080
+#   gRPC API:   localhost:26500
+#   Monitoring: http://localhost:9600/actuator
+
+x-common: &common
+  image: camunda/camunda:${CAMUNDA_VERSION:-8.9-SNAPSHOT}
+  environment: &common-env
+    SPRING_PROFILES_ACTIVE: 'broker,consolidated-auth'
+    ZEEBE_BROKER_CLUSTER_CLUSTERSIZE: '3'
+    ZEEBE_BROKER_CLUSTER_PARTITIONSCOUNT: '3'
+    ZEEBE_BROKER_CLUSTER_REPLICATIONFACTOR: '3'
+    ZEEBE_BROKER_NETWORK_HOST: '0.0.0.0'
+    ZEEBE_BROKER_CLUSTER_INITIALCONTACTPOINTS: 'broker0:26502,broker1:26502,broker2:26502'
+    CAMUNDA_DATABASE_URL: 'jdbc:h2:mem:cpt;DB_CLOSE_DELAY=-1;MODE=PostgreSQL'
+    CAMUNDA_DATABASE_TYPE: 'rdbms'
+    CAMUNDA_DATABASE_USERNAME: 'sa'
+    CAMUNDA_DATABASE_PASSWORD: ''
+    CAMUNDA_DATA_SECONDARY_STORAGE_TYPE: 'rdbms'
+    ZEEBE_BROKER_EXPORTERS_RDBMS_CLASSNAME: 'io.camunda.exporter.rdbms.RdbmsExporter'
+    ZEEBE_BROKER_EXPORTERS_RDBMS_ARGS_FLUSH_INTERVAL: 'PT0S'
+    CAMUNDA_SECURITY_AUTHENTICATION_UNPROTECTEDAPI: 'true'
+    CAMUNDA_SECURITY_AUTHORIZATIONS_ENABLED: 'false'
+    MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: 'health,prometheus'
+    ZEEBE_BROKER_EXECUTIONMETRICSEXPORTERENABLED: 'true'
+  networks:
+    - camunda-cluster
+  restart: unless-stopped
+  healthcheck:
+    test: ['CMD', 'wget', '-qO', '-', 'http://localhost:9600/actuator/health/status']
+    interval: 5s
+    timeout: 3s
+    retries: 30
+
+services:
+  broker0:
+    <<: *common
+    container_name: broker0
+    environment:
+      <<: *common-env
+      ZEEBE_BROKER_CLUSTER_NODEID: '0'
+      ZEEBE_BROKER_NETWORK_ADVERTISEDHOST: 'broker0'
+    ports:
+      - '8080:8080'
+      - '26500:26500'
+      - '9600:9600'
+
+  broker1:
+    <<: *common
+    container_name: broker1
+    environment:
+      <<: *common-env
+      ZEEBE_BROKER_CLUSTER_NODEID: '1'
+      ZEEBE_BROKER_NETWORK_ADVERTISEDHOST: 'broker1'
+
+  broker2:
+    <<: *common
+    container_name: broker2
+    environment:
+      <<: *common-env
+      ZEEBE_BROKER_CLUSTER_NODEID: '2'
+      ZEEBE_BROKER_NETWORK_ADVERTISEDHOST: 'broker2'
+
+networks:
+  camunda-cluster:
+    name: camunda-cluster

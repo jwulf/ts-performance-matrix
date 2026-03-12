@@ -1,0 +1,21 @@
+{
+  "name": "ts-performance-matrix",
+  "version": "1.0.0",
+  "description": "Performance envelope matrix — find the optimal workers-per-process split",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "matrix:local": "tsx src/run-matrix.ts --local",
+    "matrix:gcp": "tsx src/run-matrix.ts",
+    "matrix:dry": "tsx src/run-matrix.ts --local --dry-run",
+    "matrix:quick": "tsx src/run-matrix.ts --local --workers 10 --wpp 1,2,5,10 --modes rest-balanced --handlers cpu --clusters 1broker --target 1000 --precreate 5000"
+  },
+  "dependencies": {
+    "@camunda8/orchestration-cluster-api": "^8.9.0-alpha.13",
+    "@camunda8/sdk": "^8.8.7",
+    "@google-cloud/compute": "^6.8.0",
+    "@types/node": "^25.4.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
