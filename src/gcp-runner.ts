@@ -121,16 +121,16 @@ function sshArgs(opts: GcpOptions, vmName: string, command: string, timeoutMs = 
 }
 
 /** Probe a single broker's health endpoint. Returns detailed diagnostics. */
-function probeBrokerHealth(opts: GcpOptions, vmName: string, internalIp: string): HealthProbe {
+async function probeBrokerHealth(opts: GcpOptions, vmName: string, internalIp: string): Promise<HealthProbe> {
   if (isRunningOnGcpVm()) {
-    // Direct curl from same VPC — use -s (silent) + -w for HTTP code, not -f (fail-silent)
-    const r = childProcess.spawnSync('curl', [
-      '-s', '--connect-timeout', '3',
+    // Direct curl from same VPC — non-blocking, allows other lanes to progress
+    const r = await spawnAsync('curl', [
+      '-s', '--connect-timeout', '2', '--max-time', '5',
       '-w', '\n%{http_code}',
-      `http://${internalIp}:9600/actuator/health/status`,
-    ], { encoding: 'utf-8', timeout: 10_000 });
-    if (r.status !== 0) {
-      return { healthy: false, status: null, body: '', error: r.stderr?.trim() || `curl exit ${r.status}` };
+      `http://${internalIp}:9600/actuator/health`,
+    ], 10_000);
+    if (r.exitCode !== 0) {
+      return { healthy: false, status: null, body: '', error: r.stderr?.trim() || `curl exit ${r.exitCode}` };
     }
     const lines = (r.stdout || '').trim().split('\n');
     const httpCode = parseInt(lines.pop() || '0', 10);
@@ -138,8 +138,8 @@ function probeBrokerHealth(opts: GcpOptions, vmName: string, internalIp: string)
     return { healthy: httpCode === 200, status: httpCode, body, error: '' };
   }
   // SSH into broker and curl localhost
-  const curlCmd = `curl -s --connect-timeout 3 -w '\\n%{http_code}' http://localhost:9600/actuator/health/status`;
-  const r = gcloud([
+  const curlCmd = `curl -s --connect-timeout 2 --max-time 5 -w '\\n%{http_code}' http://localhost:9600/actuator/health`;
+  const r = await gcloudAsync([
     'compute', 'ssh', vmName,
     '--project', opts.project,
     '--zone', opts.zone,
@@ -156,16 +156,16 @@ function probeBrokerHealth(opts: GcpOptions, vmName: string, internalIp: string)
 }
 
 /** Check that ALL brokers in a pool are healthy. Returns true only if every node responds 200. */
-function checkPoolHealth(opts: GcpOptions, pool: BrokerPool): boolean {
-  for (let i = 0; i < pool.vmNames.length; i++) {
-    const probe = probeBrokerHealth(opts, pool.vmNames[i], pool.internalIps[i]);
-    if (!probe.healthy) return false;
-  }
-  return true;
+async function checkPoolHealth(opts: GcpOptions, pool: BrokerPool): Promise<boolean> {
+  // Probe all nodes in parallel — don't serialize across lanes
+  const probes = await Promise.all(
+    pool.vmNames.map((vm, i) => probeBrokerHealth(opts, vm, pool.internalIps[i])),
+  );
+  return probes.every((p) => p.healthy);
 }
 
 /** Log health status of every node in the pool. */
-function logPoolHealth(opts: GcpOptions, pool: BrokerPool): void {
+async function logPoolHealth(opts: GcpOptions, pool: BrokerPool): Promise<void> {
   const curlerror: Record<number, string> = {
     7: 'connection refused (Docker container not listening yet)',
     28: 'timeout (VM still booting or pulling Docker image)',
@@ -173,8 +173,12 @@ function logPoolHealth(opts: GcpOptions, pool: BrokerPool): void {
     56: 'connection reset',
   };
   const tag = opts.laneTag ?? '';
+  // Probe all nodes in parallel
+  const probes = await Promise.all(
+    pool.vmNames.map((vm, i) => probeBrokerHealth(opts, vm, pool.internalIps[i])),
+  );
   for (let i = 0; i < pool.vmNames.length; i++) {
-    const probe = probeBrokerHealth(opts, pool.vmNames[i], pool.internalIps[i]);
+    const probe = probes[i];
     const icon = probe.healthy ? '✓' : '⏳';
     let detail: string;
     if (probe.healthy) {
@@ -192,8 +196,8 @@ function logPoolHealth(opts: GcpOptions, pool: BrokerPool): void {
 }
 
 /** Fetch docker logs from a broker VM (last N lines). */
-function fetchBrokerLogs(opts: GcpOptions, vmName: string, lines = 30): string {
-  const r = gcloud(sshArgs(opts, vmName, `docker logs camunda-broker --tail ${lines} 2>&1`), 30_000);
+async function fetchBrokerLogs(opts: GcpOptions, vmName: string, lines = 30): Promise<string> {
+  const r = await gcloudAsync(sshArgs(opts, vmName, `docker logs camunda-broker --tail ${lines} 2>&1`), 30_000);
   return r.exitCode === 0 ? r.stdout : `(failed to fetch logs: ${r.stderr})`;
 }
 
@@ -219,6 +223,36 @@ function gsutil(args: string[], timeoutMs = 30_000): string {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   return result.stdout || '';
+}
+
+/** Non-blocking spawn — allows other lanes to progress while waiting for a process. */
+function spawnAsync(
+  cmd: string, args: string[], timeoutMs = 120_000,
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  return new Promise((resolve) => {
+    const proc = childProcess.spawn(cmd, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let resolved = false;
+    const done = (exitCode: number) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      resolve({ stdout, stderr, exitCode });
+    };
+    proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+    const timer = setTimeout(() => { proc.kill('SIGTERM'); done(-1); }, timeoutMs);
+    proc.on('close', (code) => done(code ?? -1));
+    proc.on('error', () => done(-1));
+  });
+}
+
+/** Async gcloud — doesn't block the event loop. Use for parallelizable operations. */
+function gcloudAsync(args: string[], timeoutMs = 120_000) {
+  return spawnAsync('gcloud', args, timeoutMs);
 }
 
 // ─── Worker package ──────────────────────────────────────
@@ -350,12 +384,17 @@ function brokerDockerRunCmd(
 
 function brokerStartupScript(cluster: ClusterConfig, nodeId: number, clusterSize: number): string {
   const camundaVersion = process.env.CAMUNDA_VERSION || '8.9-SNAPSHOT';
+  // Broker VMs use Container-Optimized OS (COS) which has Docker pre-installed.
+  // Just need to wait for Docker daemon, open socket for SSH commands, and pull image.
   if (clusterSize > 1) {
-    // Multi-broker: only install Docker + pull image. Container started later via SSH
+    // Multi-broker: only pull image. Container started later via SSH
     // once all IPs are known (needed for initialContactPoints / SWIM discovery).
     return `#!/bin/bash
 set -e
-curl -fsSL https://get.docker.com | sh
+# COS: wait for Docker daemon to be ready
+while ! docker info >/dev/null 2>&1; do sleep 1; done
+# Allow non-root users (SSH) to use Docker
+chmod 666 /var/run/docker.sock
 docker pull camunda/camunda:${camundaVersion}
 echo "Docker ready, waiting for cluster start command"
 `;
@@ -363,7 +402,10 @@ echo "Docker ready, waiting for cluster start command"
   // Single broker: start immediately (no contact points needed)
   return `#!/bin/bash
 set -e
-curl -fsSL https://get.docker.com | sh
+# COS: wait for Docker daemon to be ready
+while ! docker info >/dev/null 2>&1; do sleep 1; done
+# Allow non-root users (SSH) to use Docker
+chmod 666 /var/run/docker.sock
 docker pull camunda/camunda:${camundaVersion}
 ${brokerDockerRunCmd(nodeId, clusterSize)}
 echo "Broker ${nodeId} started"
@@ -558,13 +600,15 @@ ${uploadResult}
 
 // ─── VM lifecycle ────────────────────────────────────────
 
-function createVm(
+async function createVm(
   opts: GcpOptions,
   vmName: string,
   machineType: string,
   startupScript: string,
   tags?: string[],
-): boolean {
+  imageFamily: string = GCP_DEFAULTS.imageFamily,
+  imageProject: string = GCP_DEFAULTS.imageProject,
+): Promise<boolean> {
   // Write startup script to a temp file to avoid --metadata comma-splitting issues
   // (e.g. SPRING_PROFILES_ACTIVE=broker,consolidated-auth would break inline --metadata)
   const scriptFile = `/tmp/perf-matrix-startup-${vmName}.sh`;
@@ -575,8 +619,8 @@ function createVm(
     '--project', opts.project,
     '--zone', opts.zone,
     '--machine-type', machineType,
-    '--image-family', GCP_DEFAULTS.imageFamily,
-    '--image-project', GCP_DEFAULTS.imageProject,
+    '--image-family', imageFamily,
+    '--image-project', imageProject,
     '--scopes', 'storage-full,compute-rw',
     '--metadata-from-file', `startup-script=${scriptFile}`,
   ];
@@ -585,7 +629,7 @@ function createVm(
   if (opts.subnetwork) args.push('--subnet', opts.subnetwork);
   if (tags?.length) args.push('--tags', tags.join(','));
 
-  const r = gcloud(args, 180_000);
+  const r = await gcloudAsync(args, 180_000);
   if (r.exitCode !== 0) {
     console.error(`[gcp] Failed to create VM ${vmName}: ${r.stderr}`);
     return false;
@@ -607,8 +651,8 @@ function deleteVms(opts: GcpOptions, vmNames: string[]): void {
   console.log(`[gcp] Deleted ${vmNames.length} VMs`);
 }
 
-function getVmInternalIp(opts: GcpOptions, vmName: string): string {
-  const r = gcloud([
+async function getVmInternalIp(opts: GcpOptions, vmName: string): Promise<string> {
+  const r = await gcloudAsync([
     'compute', 'instances', 'describe', vmName,
     '--project', opts.project,
     '--zone', opts.zone,
@@ -623,39 +667,45 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
   const clusterSize = cluster === '3broker' ? 3 : 1;
   const vmNames: string[] = [];
 
+  // Create all broker VMs in parallel (async — doesn't block other lanes)
+  const createPromises = [];
   for (let i = 0; i < clusterSize; i++) {
     const vmName = `pb-${vmTag(opts.runId)}-${i}`;
     const script = brokerStartupScript(cluster, i, clusterSize);
-    createVm(opts, vmName, GCP_DEFAULTS.brokerMachineType, script, ['camunda-broker']);
     vmNames.push(vmName);
+    createPromises.push(
+      createVm(opts, vmName, GCP_DEFAULTS.brokerMachineType, script, ['camunda-broker'],
+        GCP_DEFAULTS.brokerImageFamily, GCP_DEFAULTS.brokerImageProject),
+    );
   }
+  await Promise.all(createPromises);
 
-  // Collect IPs for all nodes
-  const internalIps = vmNames.map((vm) => getVmInternalIp(opts, vm));
+  // Collect IPs for all nodes (in parallel)
+  const internalIps = await Promise.all(vmNames.map((vm) => getVmInternalIp(opts, vm)));
   console.log(`[gcp]${opts.laneTag ?? ''} Broker IPs: ${vmNames.map((n, i) => `${n}=${internalIps[i]}`).join(', ')}`);
 
   const pool: BrokerPool = { cluster, vmNames, internalIps };
 
-  // Multi-broker: startup script only installed Docker + pulled image.
+  // Multi-broker: startup script only pulled image (COS has Docker pre-installed).
   // Now SSH in to start each container with initialContactPoints (all IPs known).
   if (clusterSize > 1) {
     console.log(`[gcp]${opts.laneTag ?? ''} Waiting for Docker pull to complete on all ${clusterSize} nodes before starting cluster...`);
     // Wait for Docker to be ready on all nodes (pull can take a while)
     const pullDeadline = Date.now() + 600_000; // 10 min for pull
     while (Date.now() < pullDeadline) {
-      let allReady = true;
-      for (const vm of vmNames) {
-        const r = gcloud(sshArgs(opts, vm, 'docker image inspect camunda/camunda:' + (process.env.CAMUNDA_VERSION || '8.9-SNAPSHOT') + ' >/dev/null 2>&1'), 30_000);
-        if (r.exitCode !== 0) { allReady = false; break; }
-      }
-      if (allReady) break;
+      const checks = await Promise.all(
+        vmNames.map((vm) =>
+          gcloudAsync(sshArgs(opts, vm, 'docker image inspect camunda/camunda:' + (process.env.CAMUNDA_VERSION || '8.9-SNAPSHOT') + ' >/dev/null 2>&1'), 30_000),
+        ),
+      );
+      if (checks.every((r) => r.exitCode === 0)) break;
       await new Promise((r) => setTimeout(r, 10_000));
     }
 
     // Start containers with contact points
     for (let i = 0; i < clusterSize; i++) {
       const cmd = brokerDockerRunCmd(i, clusterSize, internalIps);
-      const r = gcloud(sshArgs(opts, vmNames[i], cmd), 60_000);
+      const r = await gcloudAsync(sshArgs(opts, vmNames[i], cmd), 60_000);
       if (r.exitCode !== 0) {
         console.error(`[gcp]${opts.laneTag ?? ''} Failed to start broker ${vmNames[i]}: ${r.stderr}`);
         deleteVms(opts, vmNames);
@@ -665,8 +715,8 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
     }
   }
 
-  // Timeout is longer for 3-broker (SWIM protocol sync + 3 Docker pulls)
-  const healthTimeout = clusterSize > 1 ? 900_000 : 600_000; // 15 min / 10 min
+  // Timeout is shorter with COS (no Docker install), but JVM still needs time
+  const healthTimeout = clusterSize > 1 ? 600_000 : 420_000; // 10 min / 7 min
   const healthDeadline = Date.now() + healthTimeout;
   let brokerReady = false;
   let healthAttempt = 0;
@@ -674,12 +724,12 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
     healthAttempt++;
     const elapsed = Math.round((Date.now() - (healthDeadline - healthTimeout)) / 1000);
     if (healthAttempt % 6 === 1) { // Log every ~30s
-      const phase = elapsed < 60 ? '(installing Docker)' :
-        elapsed < 180 ? '(pulling image + starting JVM)' : '(waiting for ready)';
+      const phase = elapsed < 60 ? '(pulling image)' :
+        elapsed < 180 ? '(starting JVM)' : '(waiting for ready)';
       console.log(`[gcp]${opts.laneTag ?? ''} Broker health poll ${phase} — ${elapsed}s / ${Math.round(healthTimeout / 1000)}s`);
-      logPoolHealth(opts, pool);
+      await logPoolHealth(opts, pool);
     }
-    if (checkPoolHealth(opts, pool)) {
+    if (await checkPoolHealth(opts, pool)) {
       brokerReady = true;
       break;
     }
@@ -689,9 +739,9 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
   if (!brokerReady) {
     const mins = Math.round(healthTimeout / 60_000);
     console.error(`[gcp]${opts.laneTag ?? ''} FAILED: Broker pool not healthy after ${mins} min — dumping diagnostics:`);
-    logPoolHealth(opts, pool);
+    await logPoolHealth(opts, pool);
     for (const vm of vmNames) {
-      console.error(`[gcp]${opts.laneTag ?? ''} Docker logs for ${vm}:\n${fetchBrokerLogs(opts, vm, 40)}`);
+      console.error(`[gcp]${opts.laneTag ?? ''} Docker logs for ${vm}:\n${await fetchBrokerLogs(opts, vm, 40)}`);
     }
     console.error(`[gcp]${opts.laneTag ?? ''} Cleaning up failed broker VMs...`);
     deleteVms(opts, vmNames);
@@ -719,7 +769,7 @@ async function resetBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<bool
 
   console.log(`[gcp] Resetting broker pool (${clusterSize} nodes)...`);
 
-  // Reset each broker VM in parallel via SSH
+  // Reset each broker VM via async SSH (doesn't block other lanes)
   for (let i = 0; i < clusterSize; i++) {
     const vmName = pool.vmNames[i];
     const nodeId = i;
@@ -733,7 +783,7 @@ async function resetBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<bool
       dockerRunCmd,
     ].join(' && ');
 
-    const r = gcloud(sshArgs(opts, vmName, resetScript), 120_000);
+    const r = await gcloudAsync(sshArgs(opts, vmName, resetScript), 120_000);
 
     if (r.exitCode !== 0) {
       console.error(`[gcp] Failed to reset broker ${vmName}: ${r.stderr}`);
@@ -753,9 +803,9 @@ async function resetBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<bool
       const phase = elapsed < 30 ? '(restarting container)' :
         clusterSize > 1 && elapsed < 120 ? '(SWIM cluster sync)' : '(waiting for ready)';
       console.log(`[gcp]${opts.laneTag ?? ''} Reset health poll ${phase} — ${elapsed}s / ${Math.round(healthTimeout / 1000)}s`);
-      logPoolHealth(opts, pool);
+      await logPoolHealth(opts, pool);
     }
-    if (checkPoolHealth(opts, pool)) {
+    if (await checkPoolHealth(opts, pool)) {
       console.log(`[gcp]${opts.laneTag ?? ''} Broker pool reset and healthy (all ${clusterSize} nodes)`);
       return true;
     }
@@ -764,9 +814,9 @@ async function resetBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<bool
 
   const mins = Math.round(healthTimeout / 60_000);
   console.error(`[gcp]${opts.laneTag ?? ''} FAILED: Broker pool not healthy after reset (${mins} min) — dumping diagnostics:`);
-  logPoolHealth(opts, pool);
+  await logPoolHealth(opts, pool);
   for (const vm of pool.vmNames) {
-    console.error(`[gcp]${opts.laneTag ?? ''} Docker logs for ${vm}:\n${fetchBrokerLogs(opts, vm, 40)}`);
+    console.error(`[gcp]${opts.laneTag ?? ''} Docker logs for ${vm}:\n${await fetchBrokerLogs(opts, vm, 40)}`);
   }
   return false;
 }
@@ -857,7 +907,7 @@ export async function runScenarioGcp(
       isLeader: p === 0,
     });
 
-    createVm(opts, vmName, GCP_DEFAULTS.workerMachineType, script, ['perf-worker']);
+    await createVm(opts, vmName, GCP_DEFAULTS.workerMachineType, script, ['perf-worker']);
     workerVmNames.push(vmName);
   }
 

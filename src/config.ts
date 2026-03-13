@@ -65,6 +65,9 @@ export const GCP_DEFAULTS = {
   subnetwork: 'default',
   imageFamily: 'debian-12',
   imageProject: 'debian-cloud',
+  // Container-Optimized OS — Docker pre-installed, saves 3-5 min per broker VM
+  brokerImageFamily: 'cos-stable',
+  brokerImageProject: 'cos-cloud',
   gcsBucket: 'camunda-perf-matrix',
 } as const;
 
