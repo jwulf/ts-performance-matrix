@@ -43,6 +43,58 @@ function vmTag(runId: string): string {
   return runId.replace(/^run-/, '').slice(-8);
 }
 
+// ─── Connectivity helpers ────────────────────────────────
+
+/**
+ * Detect whether we're running on a GCP VM by probing the metadata server.
+ * Cached after first call. When true, we can reach other VMs in the same VPC
+ * directly via internal IP (no IAP tunnel needed).
+ */
+let _onGcpVm: boolean | null = null;
+function isRunningOnGcpVm(): boolean {
+  if (_onGcpVm !== null) return _onGcpVm;
+  const r = childProcess.spawnSync('curl', [
+    '-sf', '--connect-timeout', '1',
+    '-H', 'Metadata-Flavor: Google',
+    'http://metadata.google.internal/computeMetadata/v1/instance/name',
+  ], { encoding: 'utf-8', timeout: 3000 });
+  _onGcpVm = r.status === 0;
+  if (_onGcpVm) console.log('[gcp] Running on GCP VM — using internal IP for SSH and health checks');
+  return _onGcpVm;
+}
+
+/** Build gcloud compute ssh args, using --internal-ip on GCP VMs, --tunnel-through-iap otherwise. */
+function sshArgs(opts: GcpOptions, vmName: string, command: string, timeoutMs = 30_000): string[] {
+  const args = ['compute', 'ssh', vmName, '--project', opts.project, '--zone', opts.zone];
+  if (isRunningOnGcpVm()) {
+    args.push('--internal-ip');
+  } else {
+    args.push('--tunnel-through-iap');
+  }
+  args.push('--command', command);
+  return args;
+}
+
+/** Check broker health — direct curl when on same VPC, SSH otherwise. */
+function checkBrokerHealth(opts: GcpOptions, vmName: string, internalIp: string): boolean {
+  if (isRunningOnGcpVm()) {
+    // Direct curl from same VPC
+    const r = childProcess.spawnSync('curl', [
+      '-sf', '--connect-timeout', '3', `http://${internalIp}:9600/actuator/health/status`,
+    ], { encoding: 'utf-8', timeout: 10_000 });
+    return r.status === 0;
+  }
+  // SSH into broker and curl localhost
+  const r = gcloud([
+    'compute', 'ssh', vmName,
+    '--project', opts.project,
+    '--zone', opts.zone,
+    '--tunnel-through-iap',
+    '--command', 'curl -sf --connect-timeout 3 http://localhost:9600/actuator/health/status',
+  ], 30_000);
+  return r.exitCode === 0;
+}
+
 // ─── Shell helpers ───────────────────────────────────────
 
 function gcloud(args: string[], timeoutMs = 120_000): { stdout: string; stderr: string; exitCode: number } {
@@ -443,7 +495,7 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
     vmNames.push(vmName);
   }
 
-  // Wait for health check on primary broker via SSH (VMs have no external IP)
+  // Wait for health check on primary broker
   const primaryIp = getVmInternalIp(opts, vmNames[0]);
   console.log(`[gcp] Broker primary IP: ${primaryIp}`);
 
@@ -457,14 +509,7 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
     if (healthAttempt % 6 === 1) { // Log every ~30s
       console.log(`[gcp] Waiting for broker health check... (${elapsed}s elapsed)`);
     }
-    const r = gcloud([
-      'compute', 'ssh', vmNames[0],
-      '--project', opts.project,
-      '--zone', opts.zone,
-      '--tunnel-through-iap',
-      '--command', 'curl -sf --connect-timeout 3 http://localhost:9600/actuator/health/status',
-    ], 30_000);
-    if (r.exitCode === 0) {
+    if (checkBrokerHealth(opts, vmNames[0], primaryIp)) {
       brokerReady = true;
       break;
     }
@@ -534,13 +579,7 @@ async function resetBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<bool
       dockerRunCmd,
     ].join(' && ');
 
-    const r = gcloud([
-      'compute', 'ssh', vmName,
-      '--project', opts.project,
-      '--zone', opts.zone,
-      '--tunnel-through-iap',
-      '--command', resetScript,
-    ], 120_000);
+    const r = gcloud(sshArgs(opts, vmName, resetScript), 120_000);
 
     if (r.exitCode !== 0) {
       console.error(`[gcp] Failed to reset broker ${vmName}: ${r.stderr}`);
@@ -549,7 +588,7 @@ async function resetBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<bool
     console.log(`[gcp] Reset broker ${vmName} (node ${nodeId})`);
   }
 
-  // Wait for primary broker health check via SSH (VMs have no external IP)
+  // Wait for primary broker health check
   const healthTimeout = 180_000; // 3 min
   const healthDeadline = Date.now() + healthTimeout;
   let resetAttempt = 0;
@@ -559,14 +598,7 @@ async function resetBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<bool
     if (resetAttempt % 5 === 1) { // Log every ~15s
       console.log(`[gcp] Waiting for broker health after reset... (${elapsed}s elapsed)`);
     }
-    const r = gcloud([
-      'compute', 'ssh', pool.vmNames[0],
-      '--project', opts.project,
-      '--zone', opts.zone,
-      '--tunnel-through-iap',
-      '--command', 'curl -sf --connect-timeout 3 http://localhost:9600/actuator/health/status',
-    ], 30_000);
-    if (r.exitCode === 0) {
+    if (checkBrokerHealth(opts, pool.vmNames[0], pool.internalIp)) {
       console.log(`[gcp] Broker pool reset and healthy`);
       return true;
     }
