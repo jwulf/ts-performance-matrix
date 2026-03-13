@@ -129,12 +129,26 @@ function checkPoolHealth(opts: GcpOptions, pool: BrokerPool): boolean {
 
 /** Log health status of every node in the pool. */
 function logPoolHealth(opts: GcpOptions, pool: BrokerPool): void {
+  const curlerror: Record<number, string> = {
+    7: 'connection refused (Docker container not listening yet)',
+    28: 'timeout (VM still booting or pulling Docker image)',
+    6: 'DNS resolution failed',
+    56: 'connection reset',
+  };
   for (let i = 0; i < pool.vmNames.length; i++) {
     const probe = probeBrokerHealth(opts, pool.vmNames[i], pool.internalIps[i]);
-    const tag = probe.healthy ? '✓' : '✗';
-    const detail = probe.error
-      ? `error: ${probe.error}`
-      : `HTTP ${probe.status} — ${probe.body.slice(0, 120)}`;
+    const tag = probe.healthy ? '✓' : '⏳';
+    let detail: string;
+    if (probe.healthy) {
+      detail = probe.body.slice(0, 80);
+    } else if (probe.error) {
+      const exitMatch = probe.error.match(/curl exit (\d+)/);
+      const code = exitMatch ? parseInt(exitMatch[1], 10) : 0;
+      const hint = curlerror[code] || probe.error;
+      detail = hint;
+    } else {
+      detail = `HTTP ${probe.status} — ${probe.body.slice(0, 80)}`;
+    }
     console.log(`  [node ${i}] ${tag} ${pool.vmNames[i]}: ${detail}`);
   }
 }
@@ -255,40 +269,65 @@ function buildWorkerPackage(opts: GcpOptions, language: SdkLanguage): string {
 
 // ─── Startup scripts ─────────────────────────────────────
 
+/**
+ * Build the `docker run` command for a broker node.
+ * For multi-broker clusters, contactPointIps must include all broker IPs.
+ */
+function brokerDockerRunCmd(
+  nodeId: number, clusterSize: number, contactPointIps: string[] = [],
+): string {
+  const camundaVersion = process.env.CAMUNDA_VERSION || '8.9-SNAPSHOT';
+  const envs = [
+    'docker run -d',
+    '--name camunda-broker',
+    '--network host',
+    `-e SPRING_PROFILES_ACTIVE=broker,consolidated-auth`,
+    `-e ZEEBE_BROKER_CLUSTER_CLUSTERSIZE=${clusterSize}`,
+    `-e ZEEBE_BROKER_CLUSTER_PARTITIONSCOUNT=${clusterSize}`,
+    `-e ZEEBE_BROKER_CLUSTER_REPLICATIONFACTOR=${Math.min(clusterSize, 3)}`,
+    `-e ZEEBE_BROKER_CLUSTER_NODEID=${nodeId}`,
+    `-e ZEEBE_BROKER_NETWORK_HOST=0.0.0.0`,
+  ];
+  // Multi-broker: each node needs to know all peers for SWIM discovery
+  if (clusterSize > 1 && contactPointIps.length > 0) {
+    const points = contactPointIps.map((ip) => `${ip}:26502`).join(',');
+    envs.push(`-e ZEEBE_BROKER_CLUSTER_INITIALCONTACTPOINTS=${points}`);
+  }
+  envs.push(
+    `-e 'CAMUNDA_DATABASE_URL=jdbc:h2:mem:cpt;DB_CLOSE_DELAY=-1;MODE=PostgreSQL'`,
+    `-e CAMUNDA_DATABASE_TYPE=rdbms`,
+    `-e CAMUNDA_DATABASE_USERNAME=sa`,
+    `-e CAMUNDA_DATABASE_PASSWORD=`,
+    `-e CAMUNDA_DATA_SECONDARY_STORAGE_TYPE=rdbms`,
+    `-e ZEEBE_BROKER_EXPORTERS_RDBMS_CLASSNAME=io.camunda.exporter.rdbms.RdbmsExporter`,
+    `-e ZEEBE_BROKER_EXPORTERS_RDBMS_ARGS_FLUSH_INTERVAL=PT0S`,
+    `-e CAMUNDA_SECURITY_AUTHENTICATION_UNPROTECTEDAPI=true`,
+    `-e CAMUNDA_SECURITY_AUTHORIZATIONS_ENABLED=false`,
+    `-e MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health,prometheus`,
+    `-e ZEEBE_BROKER_EXECUTIONMETRICSEXPORTERENABLED=true`,
+    `camunda/camunda:${camundaVersion}`,
+  );
+  return envs.join(' \\\n  ');
+}
+
 function brokerStartupScript(cluster: ClusterConfig, nodeId: number, clusterSize: number): string {
   const camundaVersion = process.env.CAMUNDA_VERSION || '8.9-SNAPSHOT';
+  if (clusterSize > 1) {
+    // Multi-broker: only install Docker + pull image. Container started later via SSH
+    // once all IPs are known (needed for initialContactPoints / SWIM discovery).
+    return `#!/bin/bash
+set -e
+curl -fsSL https://get.docker.com | sh
+docker pull camunda/camunda:${camundaVersion}
+echo "Docker ready, waiting for cluster start command"
+`;
+  }
+  // Single broker: start immediately (no contact points needed)
   return `#!/bin/bash
 set -e
-
-# Install Docker
 curl -fsSL https://get.docker.com | sh
-
-# Pull Camunda image
 docker pull camunda/camunda:${camundaVersion}
-
-# Run broker
-docker run -d \\
-  --name camunda-broker \\
-  --network host \\
-  -e SPRING_PROFILES_ACTIVE=broker,consolidated-auth \\
-  -e ZEEBE_BROKER_CLUSTER_CLUSTERSIZE=${clusterSize} \\
-  -e ZEEBE_BROKER_CLUSTER_PARTITIONSCOUNT=${clusterSize} \\
-  -e ZEEBE_BROKER_CLUSTER_REPLICATIONFACTOR=${Math.min(clusterSize, 3)} \\
-  -e ZEEBE_BROKER_CLUSTER_NODEID=${nodeId} \\
-  -e ZEEBE_BROKER_NETWORK_HOST=0.0.0.0 \\
-  -e 'CAMUNDA_DATABASE_URL=jdbc:h2:mem:cpt;DB_CLOSE_DELAY=-1;MODE=PostgreSQL' \\
-  -e CAMUNDA_DATABASE_TYPE=rdbms \\
-  -e CAMUNDA_DATABASE_USERNAME=sa \\
-  -e CAMUNDA_DATABASE_PASSWORD= \\
-  -e CAMUNDA_DATA_SECONDARY_STORAGE_TYPE=rdbms \\
-  -e ZEEBE_BROKER_EXPORTERS_RDBMS_CLASSNAME=io.camunda.exporter.rdbms.RdbmsExporter \\
-  -e ZEEBE_BROKER_EXPORTERS_RDBMS_ARGS_FLUSH_INTERVAL=PT0S \\
-  -e CAMUNDA_SECURITY_AUTHENTICATION_UNPROTECTEDAPI=true \\
-  -e CAMUNDA_SECURITY_AUTHORIZATIONS_ENABLED=false \\
-  -e MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health,prometheus \\
-  -e ZEEBE_BROKER_EXECUTIONMETRICSEXPORTERENABLED=true \\
-  camunda/camunda:${camundaVersion}
-
+${brokerDockerRunCmd(nodeId, clusterSize)}
 echo "Broker ${nodeId} started"
 `;
 }
@@ -557,6 +596,35 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
 
   const pool: BrokerPool = { cluster, vmNames, internalIps };
 
+  // Multi-broker: startup script only installed Docker + pulled image.
+  // Now SSH in to start each container with initialContactPoints (all IPs known).
+  if (clusterSize > 1) {
+    console.log(`[gcp] Waiting for Docker pull to complete on all ${clusterSize} nodes before starting cluster...`);
+    // Wait for Docker to be ready on all nodes (pull can take a while)
+    const pullDeadline = Date.now() + 600_000; // 10 min for pull
+    while (Date.now() < pullDeadline) {
+      let allReady = true;
+      for (const vm of vmNames) {
+        const r = gcloud(sshArgs(opts, vm, 'docker image inspect camunda/camunda:' + (process.env.CAMUNDA_VERSION || '8.9-SNAPSHOT') + ' >/dev/null 2>&1'), 30_000);
+        if (r.exitCode !== 0) { allReady = false; break; }
+      }
+      if (allReady) break;
+      await new Promise((r) => setTimeout(r, 10_000));
+    }
+
+    // Start containers with contact points
+    for (let i = 0; i < clusterSize; i++) {
+      const cmd = brokerDockerRunCmd(i, clusterSize, internalIps);
+      const r = gcloud(sshArgs(opts, vmNames[i], cmd), 60_000);
+      if (r.exitCode !== 0) {
+        console.error(`[gcp] Failed to start broker ${vmNames[i]}: ${r.stderr}`);
+        deleteVms(opts, vmNames);
+        return null;
+      }
+      console.log(`[gcp] Started broker ${vmNames[i]} (node ${i}) with contact points`);
+    }
+  }
+
   // Timeout is longer for 3-broker (SWIM protocol sync + 3 Docker pulls)
   const healthTimeout = clusterSize > 1 ? 900_000 : 600_000; // 15 min / 10 min
   const healthDeadline = Date.now() + healthTimeout;
@@ -566,7 +634,9 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
     healthAttempt++;
     const elapsed = Math.round((Date.now() - (healthDeadline - healthTimeout)) / 1000);
     if (healthAttempt % 6 === 1) { // Log every ~30s
-      console.log(`[gcp] Waiting for broker health check... (${elapsed}s elapsed)`);
+      const phase = elapsed < 60 ? '(installing Docker)' :
+        elapsed < 180 ? '(pulling image + starting JVM)' : '(waiting for ready)';
+      console.log(`[gcp] Broker health poll ${phase} — ${elapsed}s / ${Math.round(healthTimeout / 1000)}s`);
       logPoolHealth(opts, pool);
     }
     if (checkPoolHealth(opts, pool)) {
@@ -578,7 +648,7 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
 
   if (!brokerReady) {
     const mins = Math.round(healthTimeout / 60_000);
-    console.error(`[gcp] Broker pool failed health check after ${mins} min — diagnostics:`);
+    console.error(`[gcp] FAILED: Broker pool not healthy after ${mins} min — dumping diagnostics:`);
     logPoolHealth(opts, pool);
     for (const vm of vmNames) {
       console.error(`[gcp] Docker logs for ${vm}:\n${fetchBrokerLogs(opts, vm, 40)}`);
@@ -606,7 +676,6 @@ function teardownBrokerPool(opts: GcpOptions, pool: BrokerPool): void {
  */
 async function resetBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<boolean> {
   const clusterSize = pool.vmNames.length;
-  const camundaVersion = process.env.CAMUNDA_VERSION || '8.9-SNAPSHOT';
 
   console.log(`[gcp] Resetting broker pool (${clusterSize} nodes)...`);
 
@@ -615,30 +684,7 @@ async function resetBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<bool
     const vmName = pool.vmNames[i];
     const nodeId = i;
 
-    // Build the docker run command matching brokerStartupScript exactly
-    const dockerRunCmd = [
-      'docker run -d',
-      '--name camunda-broker',
-      '--network host',
-      `-e SPRING_PROFILES_ACTIVE=broker,consolidated-auth`,
-      `-e ZEEBE_BROKER_CLUSTER_CLUSTERSIZE=${clusterSize}`,
-      `-e ZEEBE_BROKER_CLUSTER_PARTITIONSCOUNT=${clusterSize}`,
-      `-e ZEEBE_BROKER_CLUSTER_REPLICATIONFACTOR=${Math.min(clusterSize, 3)}`,
-      `-e ZEEBE_BROKER_CLUSTER_NODEID=${nodeId}`,
-      `-e ZEEBE_BROKER_NETWORK_HOST=0.0.0.0`,
-      `-e 'CAMUNDA_DATABASE_URL=jdbc:h2:mem:cpt;DB_CLOSE_DELAY=-1;MODE=PostgreSQL'`,
-      `-e CAMUNDA_DATABASE_TYPE=rdbms`,
-      `-e CAMUNDA_DATABASE_USERNAME=sa`,
-      `-e CAMUNDA_DATABASE_PASSWORD=`,
-      `-e CAMUNDA_DATA_SECONDARY_STORAGE_TYPE=rdbms`,
-      `-e ZEEBE_BROKER_EXPORTERS_RDBMS_CLASSNAME=io.camunda.exporter.rdbms.RdbmsExporter`,
-      `-e ZEEBE_BROKER_EXPORTERS_RDBMS_ARGS_FLUSH_INTERVAL=PT0S`,
-      `-e CAMUNDA_SECURITY_AUTHENTICATION_UNPROTECTEDAPI=true`,
-      `-e CAMUNDA_SECURITY_AUTHORIZATIONS_ENABLED=false`,
-      `-e MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health,prometheus`,
-      `-e ZEEBE_BROKER_EXECUTIONMETRICSEXPORTERENABLED=true`,
-      `camunda/camunda:${camundaVersion}`,
-    ].join(' \\\n  ');
+    const dockerRunCmd = brokerDockerRunCmd(nodeId, clusterSize, pool.internalIps);
 
     const resetScript = [
       'docker stop camunda-broker 2>/dev/null || true',
@@ -664,7 +710,9 @@ async function resetBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<bool
     resetAttempt++;
     const elapsed = Math.round((Date.now() - (healthDeadline - healthTimeout)) / 1000);
     if (resetAttempt % 5 === 1) { // Log every ~15s
-      console.log(`[gcp] Waiting for broker health after reset... (${elapsed}s elapsed)`);
+      const phase = elapsed < 30 ? '(restarting container)' :
+        clusterSize > 1 && elapsed < 120 ? '(SWIM cluster sync)' : '(waiting for ready)';
+      console.log(`[gcp] Reset health poll ${phase} — ${elapsed}s / ${Math.round(healthTimeout / 1000)}s`);
       logPoolHealth(opts, pool);
     }
     if (checkPoolHealth(opts, pool)) {
@@ -675,7 +723,7 @@ async function resetBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<bool
   }
 
   const mins = Math.round(healthTimeout / 60_000);
-  console.error(`[gcp] Broker pool failed health check after reset (${mins} min) — diagnostics:`);
+  console.error(`[gcp] FAILED: Broker pool not healthy after reset (${mins} min) — dumping diagnostics:`);
   logPoolHealth(opts, pool);
   for (const vm of pool.vmNames) {
     console.error(`[gcp] Docker logs for ${vm}:\n${fetchBrokerLogs(opts, vm, 40)}`);
