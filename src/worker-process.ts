@@ -7,7 +7,7 @@
  *
  * Environment variables:
  *   WORKER_PROCESS_ID     — unique process identifier (e.g., "process-0")
- *   SDK_MODE              — rest-balanced | grpc-poll
+ *   SDK_MODE              — rest | grpc-polling
  *   HANDLER_TYPE          — cpu | http
  *   HANDLER_LATENCY_MS    — handler simulation latency (default: 0 for cpu, 200 for http)
  *   NUM_WORKERS           — number of workers in this process (WPP)
@@ -28,7 +28,7 @@ import * as http from 'node:http';
 // ─── Config ──────────────────────────────────────────────
 
 const PROCESS_ID = process.env.WORKER_PROCESS_ID || 'process-0';
-const SDK_MODE = (process.env.SDK_MODE || 'rest-balanced') as 'rest-balanced' | 'grpc-poll';
+const SDK_MODE = (process.env.SDK_MODE || 'rest') as 'rest' | 'grpc-streaming' | 'grpc-polling';
 const HANDLER_TYPE = (process.env.HANDLER_TYPE || 'cpu') as 'cpu' | 'http';
 const HANDLER_LATENCY_MS = parseInt(process.env.HANDLER_LATENCY_MS || (HANDLER_TYPE === 'http' ? '200' : '0'), 10);
 const NUM_WORKERS = parseInt(process.env.NUM_WORKERS || '1', 10);
@@ -253,7 +253,7 @@ async function main() {
 
   let result: { metrics: WorkerMetrics[]; wallClockS: number };
 
-  if (SDK_MODE === 'grpc-poll') {
+  if (SDK_MODE === 'grpc-polling') {
     result = await runGrpcPoll(httpSimPort);
   } else {
     result = await runRestBalanced(httpSimPort);

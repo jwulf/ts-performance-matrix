@@ -9,13 +9,23 @@
 
 export const TOTAL_WORKERS = [10, 20, 50] as const;
 export const WORKERS_PER_PROCESS = [1, 2, 5, 10, 25, 50] as const;
-export const SDK_MODES = ['rest-balanced', 'grpc-poll'] as const;
+export const SDK_MODES = ['rest', 'grpc-streaming', 'grpc-polling'] as const;
+export const SDK_LANGUAGES = ['ts', 'python', 'csharp', 'java'] as const;
 export const HANDLER_TYPES = ['cpu', 'http'] as const;
 export const CLUSTERS = ['1broker', '3broker'] as const;
 
 export type SdkMode = (typeof SDK_MODES)[number];
+export type SdkLanguage = (typeof SDK_LANGUAGES)[number];
 export type HandlerType = (typeof HANDLER_TYPES)[number];
 export type ClusterConfig = (typeof CLUSTERS)[number];
+
+/** Valid (language, mode) combinations — not all languages support gRPC. */
+export const VALID_LANG_MODES: Record<SdkLanguage, readonly SdkMode[]> = {
+  ts: ['rest', 'grpc-polling'],
+  python: ['rest'],
+  csharp: ['rest'],
+  java: ['rest', 'grpc-streaming', 'grpc-polling'],
+} as const;
 
 // ─── Topology ────────────────────────────────────────────
 
@@ -28,6 +38,7 @@ export interface Topology {
 export interface ScenarioConfig {
   id: string;
   topology: Topology;
+  sdkLanguage: SdkLanguage;
   sdkMode: SdkMode;
   handlerType: HandlerType;
   cluster: ClusterConfig;
@@ -80,12 +91,14 @@ export function getValidTopologies(): Topology[] {
 export function generateMatrix(opts?: {
   totalWorkers?: number[];
   workersPerProcess?: number[];
+  sdkLanguages?: SdkLanguage[];
   sdkModes?: SdkMode[];
   handlerTypes?: HandlerType[];
   clusters?: ClusterConfig[];
 }): ScenarioConfig[] {
   const tw = opts?.totalWorkers ?? [...TOTAL_WORKERS];
   const wpp = opts?.workersPerProcess ?? [...WORKERS_PER_PROCESS];
+  const languages = opts?.sdkLanguages ?? [...SDK_LANGUAGES];
   const modes = opts?.sdkModes ?? [...SDK_MODES];
   const handlers = opts?.handlerTypes ?? [...HANDLER_TYPES];
   const clusters = opts?.clusters ?? [...CLUSTERS];
@@ -97,16 +110,21 @@ export function generateMatrix(opts?: {
       for (const WPP of wpp.sort((a, b) => a - b)) {
         if (WPP > W || W % WPP !== 0) continue;
         const P = W / WPP;
-        for (const mode of modes) {
-          for (const handler of handlers) {
-            const id = `${cluster}-W${W}-P${P}x${WPP}-${mode}-${handler}`;
-            scenarios.push({
-              id,
-              topology: { totalWorkers: W, workersPerProcess: WPP, processes: P },
-              sdkMode: mode,
-              handlerType: handler,
-              cluster,
-            });
+        for (const lang of languages) {
+          for (const mode of modes) {
+            // Skip invalid (language, mode) combinations
+            if (!VALID_LANG_MODES[lang].includes(mode)) continue;
+            for (const handler of handlers) {
+              const id = `${cluster}-${lang}-W${W}-P${P}x${WPP}-${mode}-${handler}`;
+              scenarios.push({
+                id,
+                topology: { totalWorkers: W, workersPerProcess: WPP, processes: P },
+                sdkLanguage: lang,
+                sdkMode: mode,
+                handlerType: handler,
+                cluster,
+              });
+            }
           }
         }
       }

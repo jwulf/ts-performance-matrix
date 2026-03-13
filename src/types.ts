@@ -43,6 +43,7 @@ export interface ScenarioResult {
   totalWorkers: number;
   workersPerProcess: number;
   processes: number;
+  sdkLanguage: string;
   sdkMode: string;
   handlerType: string;
   cluster: string;

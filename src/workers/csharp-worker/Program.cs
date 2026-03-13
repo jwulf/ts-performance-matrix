@@ -1,0 +1,375 @@
+// C# worker for the performance matrix.
+//
+// Uses the Camunda.Orchestration.Sdk NuGet package to poll for and complete jobs.
+//
+// Environment variables (same protocol as TS worker):
+//   WORKER_PROCESS_ID, SDK_MODE (always "rest"), HANDLER_TYPE, HANDLER_LATENCY_MS,
+//   NUM_WORKERS, TARGET_PER_WORKER, ACTIVATE_BATCH, PAYLOAD_SIZE_KB,
+//   SCENARIO_TIMEOUT_S, BROKER_REST_URL, RESULT_FILE, READY_FILE, GO_FILE
+
+using System.Diagnostics;
+using System.Net;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Camunda.Orchestration.Sdk;
+using Camunda.Orchestration.Sdk.Runtime;
+
+// ─── Config ──────────────────────────────────────────────
+
+var PROCESS_ID = Env("WORKER_PROCESS_ID", "process-0");
+var SDK_MODE = Env("SDK_MODE", "rest");
+var HANDLER_TYPE = Env("HANDLER_TYPE", "cpu");
+var HANDLER_LATENCY_MS = EnvInt("HANDLER_LATENCY_MS", HANDLER_TYPE == "http" ? 200 : 0);
+var NUM_WORKERS = EnvInt("NUM_WORKERS", 1);
+var TARGET_PER_WORKER = EnvInt("TARGET_PER_WORKER", 10000);
+var ACTIVATE_BATCH = EnvInt("ACTIVATE_BATCH", 32);
+var SCENARIO_TIMEOUT_S = EnvInt("SCENARIO_TIMEOUT_S", 300);
+var BROKER_REST_URL = Env("BROKER_REST_URL", "http://localhost:8080").TrimEnd('/');
+var RESULT_FILE = Env("RESULT_FILE", "./result.json");
+var READY_FILE = Env("READY_FILE", "");
+var GO_FILE = Env("GO_FILE", "");
+
+// Configure SDK via env vars
+Environment.SetEnvironmentVariable("CAMUNDA_REST_ADDRESS", BROKER_REST_URL);
+Environment.SetEnvironmentVariable("CAMUNDA_AUTH_STRATEGY", "NONE");
+
+// ─── Producer mode (--produce) ───────────────────────────
+if (args.Length > 0 && args[0] == "--produce")
+{
+    await RunProducer();
+    return;
+}
+
+var jsonOpts = new JsonSerializerOptions
+{
+    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    WriteIndented = true,
+};
+
+try
+{
+    Console.WriteLine($"[csharp-worker] id={PROCESS_ID} mode={SDK_MODE} handler={HANDLER_TYPE} workers={NUM_WORKERS}");
+    Console.WriteLine($"[csharp-worker] target={TARGET_PER_WORKER}/worker broker={BROKER_REST_URL}");
+
+    // Start HTTP sim server if needed
+    int httpSimPort = 0;
+    CancellationTokenSource? simCts = null;
+    if (HANDLER_TYPE == "http" && HANDLER_LATENCY_MS > 0)
+    {
+        simCts = new CancellationTokenSource();
+        httpSimPort = await StartHttpSimServer(HANDLER_LATENCY_MS, simCts.Token);
+    }
+
+    // Signal ready (barrier protocol)
+    WriteReady(READY_FILE);
+    await WaitForGo(GO_FILE);
+
+    Console.WriteLine("[csharp-worker] GO received, starting benchmark...");
+
+    var (workerCompleted, workerErrors, wallClockS) = await RunRest(httpSimPort);
+
+    simCts?.Cancel();
+
+    var totalCompleted = workerCompleted.Sum();
+    var totalErrors = workerErrors.Sum();
+    var throughput = wallClockS > 0 ? totalCompleted / wallClockS : 0;
+    var perWorkerThroughputs = workerCompleted.Select(c => wallClockS > 0 ? c / wallClockS : 0).ToArray();
+
+    var output = new ResultOutput
+    {
+        ProcessId = PROCESS_ID,
+        SdkMode = SDK_MODE,
+        HandlerType = HANDLER_TYPE,
+        WorkersInProcess = NUM_WORKERS,
+        TotalCompleted = totalCompleted,
+        TotalErrors = totalErrors,
+        WallClockS = wallClockS,
+        Throughput = throughput,
+        PerWorkerCompleted = workerCompleted,
+        PerWorkerErrors = workerErrors,
+        PerWorkerThroughputs = perWorkerThroughputs,
+    };
+
+    Console.WriteLine($"[csharp-worker] Done: {totalCompleted} completed, {totalErrors} errors, {throughput:F1} ops/s");
+
+    await File.WriteAllTextAsync(RESULT_FILE, JsonSerializer.Serialize(output, jsonOpts));
+    Console.WriteLine($"[csharp-worker] Result written to {RESULT_FILE}");
+}
+catch (Exception ex)
+{
+    Console.Error.WriteLine($"[csharp-worker] Fatal error: {ex}");
+
+    var errorOutput = new ResultOutput
+    {
+        ProcessId = PROCESS_ID,
+        SdkMode = SDK_MODE,
+        HandlerType = HANDLER_TYPE,
+        WorkersInProcess = NUM_WORKERS,
+        TotalCompleted = 0,
+        TotalErrors = 0,
+        WallClockS = 0,
+        Throughput = 0,
+        PerWorkerCompleted = [],
+        PerWorkerErrors = [],
+        PerWorkerThroughputs = [],
+        Error = ex.Message,
+    };
+
+    await File.WriteAllTextAsync(RESULT_FILE, JsonSerializer.Serialize(errorOutput, jsonOpts));
+    Environment.Exit(1);
+}
+
+// ─── REST worker (SDK-based) ─────────────────────────────
+
+async Task<(int[] completed, int[] errors, double wallClockS)> RunRest(int httpSimPort)
+{
+    var totalTarget = NUM_WORKERS * TARGET_PER_WORKER;
+    var workerCompleted = new int[NUM_WORKERS];
+    var workerErrors = new int[NUM_WORKERS];
+    var done = 0; // 0=false, 1=true (for Interlocked)
+
+    using var httpSimClient = HANDLER_TYPE == "http" && httpSimPort > 0
+        ? new HttpClient { Timeout = TimeSpan.FromSeconds(10) }
+        : null;
+
+    await using var client = new CamundaClient();
+
+    var config = new JobWorkerConfig
+    {
+        JobType = "test-job",
+        JobTimeoutMs = 30000,
+        MaxConcurrentJobs = ACTIVATE_BATCH * NUM_WORKERS,
+    };
+
+    client.CreateJobWorker(config, async (job, ct) =>
+    {
+        // Simulate work
+        if (HANDLER_TYPE == "cpu" && HANDLER_LATENCY_MS > 0)
+            CpuWork(HANDLER_LATENCY_MS);
+        else if (HANDLER_TYPE == "http" && httpSimClient != null)
+        {
+            try { await httpSimClient.GetAsync($"http://127.0.0.1:{httpSimPort}/work", ct); }
+            catch { /* ignore sim errors */ }
+        }
+
+        // Round-robin metric tracking
+        var minIdx = MinIndex(workerCompleted);
+        Interlocked.Increment(ref workerCompleted[minIdx]);
+        var total = workerCompleted.Sum();
+        if (total >= totalTarget)
+            Interlocked.Exchange(ref done, 1);
+
+        return new { done = true };
+    });
+
+    var cts = new CancellationTokenSource(TimeSpan.FromSeconds(SCENARIO_TIMEOUT_S));
+    var sw = Stopwatch.StartNew();
+
+    // Run workers in background — blocks until cancellation
+    var workerTask = client.RunWorkersAsync(ct: cts.Token);
+
+    // Poll for completion
+    while (Volatile.Read(ref done) == 0 && !cts.Token.IsCancellationRequested)
+        await Task.Delay(50);
+
+    // Stop workers gracefully
+    cts.Cancel();
+    await workerTask;
+
+    sw.Stop();
+    return (workerCompleted, workerErrors, sw.Elapsed.TotalSeconds);
+}
+
+// ─── CPU work simulation ─────────────────────────────────
+
+static void CpuWork(int durationMs)
+{
+    if (durationMs <= 0) return;
+    var end = Stopwatch.GetTimestamp() + (long)(durationMs / 1000.0 * Stopwatch.Frequency);
+    double x = 0;
+    while (Stopwatch.GetTimestamp() < end)
+        x += Math.Sin(x + 1);
+}
+
+// ─── HTTP sim server ─────────────────────────────────────
+
+static async Task<int> StartHttpSimServer(int latencyMs, CancellationToken ct)
+{
+    var listener = new HttpListener();
+    listener.Prefixes.Add("http://127.0.0.1:0/");
+    // HttpListener doesn't support port 0 well — use TcpListener to find a free port
+    var tcp = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+    tcp.Start();
+    var port = ((IPEndPoint)tcp.LocalEndpoint).Port;
+    tcp.Stop();
+
+    listener = new HttpListener();
+    listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+    listener.Start();
+
+    _ = Task.Run(async () =>
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var ctx = await listener.GetContextAsync();
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(latencyMs, CancellationToken.None);
+                    ctx.Response.StatusCode = 200;
+                    ctx.Response.ContentType = "application/json";
+                    await using var sw = new StreamWriter(ctx.Response.OutputStream);
+                    await sw.WriteAsync("{\"ok\":true}");
+                    ctx.Response.Close();
+                });
+            }
+            catch (ObjectDisposedException) { break; }
+            catch (HttpListenerException) { break; }
+        }
+        listener.Close();
+    }, ct);
+
+    await Task.Delay(50, CancellationToken.None); // let server start
+    return port;
+}
+
+// ─── Barrier protocol ────────────────────────────────────
+
+static void WriteReady(string readyFile)
+{
+    if (string.IsNullOrEmpty(readyFile)) return;
+    var dir = Path.GetDirectoryName(readyFile);
+    if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+    File.WriteAllText(readyFile, "1");
+}
+
+static async Task WaitForGo(string goFile)
+{
+    if (string.IsNullOrEmpty(goFile)) return;
+    while (!File.Exists(goFile))
+        await Task.Delay(10);
+}
+
+// ─── Helpers ─────────────────────────────────────────────
+
+static string Env(string name, string defaultValue) =>
+    Environment.GetEnvironmentVariable(name) ?? defaultValue;
+
+static int EnvInt(string name, int defaultValue) =>
+    int.TryParse(Environment.GetEnvironmentVariable(name), out var v) ? v : defaultValue;
+
+static int MinIndex(int[] arr)
+{
+    var minIdx = 0;
+    for (var i = 1; i < arr.Length; i++)
+        if (arr[i] < arr[minIdx]) minIdx = i;
+    return minIdx;
+}
+
+// ─── Producer logic ──────────────────────────────────────
+
+async Task RunProducer()
+{
+    var bpmnPath = Env("BPMN_PATH", "");
+    var precreateCount = EnvInt("PRECREATE_COUNT", 0);
+    var payloadSizeKb = EnvInt("PAYLOAD_SIZE_KB", 10);
+    var concurrency = 50;
+
+    if (string.IsNullOrEmpty(bpmnPath))
+    {
+        Console.Error.WriteLine("[csharp-producer] BPMN_PATH not set");
+        Environment.Exit(1);
+    }
+
+    Console.WriteLine($"[csharp-producer] broker={BROKER_REST_URL} bpmn={bpmnPath} precreate={precreateCount}");
+
+    await using var client = new CamundaClient();
+
+    // Deploy
+    Console.WriteLine("[csharp-producer] Deploying process...");
+    var deployment = await client.DeployResourcesFromFilesAsync(new[] { bpmnPath });
+    var processDefKey = deployment.Processes[0].ProcessDefinitionKey;
+    Console.WriteLine($"[csharp-producer] Deployed: {processDefKey}");
+
+    // Wait for deployment propagation
+    await Task.Delay(10_000);
+
+    if (precreateCount <= 0)
+    {
+        Console.WriteLine("[csharp-producer] No pre-creation requested, done.");
+        return;
+    }
+
+    // Build payload
+    var rng = new Random();
+    var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    var payload = new string(Enumerable.Range(0, payloadSizeKb * 1024).Select(_ => chars[rng.Next(chars.Length)]).ToArray());
+
+    // Pre-create with concurrency control
+    var created = 0;
+    var errors = 0;
+    var sem = new SemaphoreSlim(concurrency);
+    var sw = Stopwatch.StartNew();
+    var lastLog = sw.Elapsed;
+
+    Console.WriteLine($"[csharp-producer] Creating {precreateCount} process instances...");
+
+    var tasks = new List<Task>();
+    for (int i = 0; i < precreateCount; i++)
+    {
+        await sem.WaitAsync();
+        tasks.Add(Task.Run(async () =>
+        {
+            try
+            {
+                await client.CreateProcessInstanceAsync(
+                    new Camunda.Orchestration.Sdk.Api.ProcessInstanceCreationInstructionByKey
+                    {
+                        ProcessDefinitionKey = processDefKey,
+                        Variables = new { data = payload },
+                    });
+                Interlocked.Increment(ref created);
+            }
+            catch
+            {
+                Interlocked.Increment(ref errors);
+            }
+            finally
+            {
+                sem.Release();
+            }
+
+            if (sw.Elapsed - lastLog > TimeSpan.FromSeconds(10))
+            {
+                var elapsed = (int)sw.Elapsed.TotalSeconds;
+                var rate = (int)(created / sw.Elapsed.TotalSeconds);
+                Console.WriteLine($"[csharp-producer] {created + errors}/{precreateCount} ({created} ok, {errors} err) {elapsed}s, ~{rate}/s");
+                lastLog = sw.Elapsed;
+            }
+        }));
+    }
+
+    await Task.WhenAll(tasks);
+
+    Console.WriteLine($"[csharp-producer] Done: {created} created, {errors} errors in {sw.Elapsed.TotalSeconds:F1}s");
+}
+
+// ─── Models ──────────────────────────────────────────────
+
+class ResultOutput
+{
+    public string ProcessId { get; set; } = "";
+    public string SdkMode { get; set; } = "";
+    public string HandlerType { get; set; } = "";
+    public int WorkersInProcess { get; set; }
+    public int TotalCompleted { get; set; }
+    public int TotalErrors { get; set; }
+    public double WallClockS { get; set; }
+    public double Throughput { get; set; }
+    public int[] PerWorkerCompleted { get; set; } = [];
+    public int[] PerWorkerErrors { get; set; } = [];
+    public double[] PerWorkerThroughputs { get; set; } = [];
+    public string? Error { get; set; }
+}

@@ -25,8 +25,11 @@ import { parseArgs } from 'node:util';
 import {
   generateMatrix,
   type SdkMode,
+  type SdkLanguage,
   type HandlerType,
   type ClusterConfig,
+  SDK_MODES,
+  SDK_LANGUAGES,
   DEFAULT_TARGET_PER_WORKER,
   DEFAULT_SCENARIO_TIMEOUT_S,
   DEFAULT_PRE_CREATE_COUNT,
@@ -46,6 +49,7 @@ const { values: argv } = parseArgs({
     // Matrix filter
     workers: { type: 'string' },       // comma-separated total worker counts
     wpp: { type: 'string' },           // comma-separated workers-per-process
+    languages: { type: 'string' },     // comma-separated SDK languages
     modes: { type: 'string' },         // comma-separated SDK modes
     handlers: { type: 'string' },      // comma-separated handler types
     clusters: { type: 'string' },      // comma-separated cluster configs
@@ -55,7 +59,12 @@ const { values: argv } = parseArgs({
     timeout: { type: 'string' },       // scenario timeout seconds
     precreate: { type: 'string' },     // pre-create count
 
+    // GCP networking
+    network: { type: 'string' },        // GCP VPC network name
+    subnetwork: { type: 'string' },     // GCP subnetwork name
+
     // Control
+    lanes: { type: 'string' },          // parallel lanes (GCP only, default: 1)
     resume: { type: 'boolean', default: false },
     'dry-run': { type: 'boolean', default: false },
     help: { type: 'boolean', default: false },
@@ -74,7 +83,8 @@ MODES:
 FILTERS (comma-separated):
   --workers 10,20       Total worker counts (default: 10,20,50)
   --wpp 1,2,5,10        Workers per process (default: 1,2,5,10,25,50)
-  --modes rest-balanced  SDK modes (default: rest-balanced,grpc-poll)
+  --languages ts,python SDK languages (default: ts,python,csharp,java)
+  --modes rest,grpc     SDK modes (default: rest,grpc)
   --handlers cpu,http   Handler types (default: cpu,http)
   --clusters 1broker    Cluster configs (default: 1broker,3broker)
 
@@ -83,7 +93,12 @@ SCENARIO PARAMS:
   --timeout 300         Scenario timeout in seconds (default: ${DEFAULT_SCENARIO_TIMEOUT_S})
   --precreate 50000     Pre-create instance count (default: ${DEFAULT_PRE_CREATE_COUNT})
 
+GCP NETWORKING:
+  --network default     VPC network for worker VMs (default: use GCP project default)
+  --subnetwork default  Subnetwork for worker VMs (default: use GCP project default)
+
 CONTROL:
+  --lanes 4             Parallel lanes (GCP only, default: 1)
   --resume              Skip scenarios with existing result files
   --dry-run             Print scenarios without executing
   --help                Show this help
@@ -127,7 +142,8 @@ const str = (v: string | boolean | undefined): string | undefined =>
 const scenarios = generateMatrix({
   totalWorkers: parseNumList(str(argv.workers)),
   workersPerProcess: parseNumList(str(argv.wpp)),
-  sdkModes: parseList<SdkMode>(str(argv.modes), ['rest-balanced', 'grpc-poll']),
+  sdkLanguages: parseList<SdkLanguage>(str(argv.languages), [...SDK_LANGUAGES]),
+  sdkModes: parseList<SdkMode>(str(argv.modes), [...SDK_MODES]),
   handlerTypes: parseList<HandlerType>(str(argv.handlers), ['cpu', 'http']),
   clusters: parseList<ClusterConfig>(str(argv.clusters), ['1broker', '3broker']),
 });
@@ -135,9 +151,18 @@ const scenarios = generateMatrix({
 const targetPerWorker = str(argv.target) ? parseInt(str(argv.target)!, 10) : DEFAULT_TARGET_PER_WORKER;
 const scenarioTimeout = str(argv.timeout) ? parseInt(str(argv.timeout)!, 10) : DEFAULT_SCENARIO_TIMEOUT_S;
 const preCreateCount = str(argv.precreate) ? parseInt(str(argv.precreate)!, 10) : DEFAULT_PRE_CREATE_COUNT;
+const lanes = str(argv.lanes) ? parseInt(str(argv.lanes)!, 10) : 1;
+
+if (lanes < 1 || !Number.isInteger(lanes)) {
+  console.error(`Error: --lanes must be a positive integer (got "${str(argv.lanes)}")`);
+  process.exit(1);
+}
 
 console.log(`Matrix: ${scenarios.length} scenarios`);
 console.log(`  Target/worker: ${targetPerWorker}  Timeout: ${scenarioTimeout}s  Pre-create: ${preCreateCount}`);
+if (lanes > 1) {
+  console.log(`  Lanes: ${lanes} (parallel execution)`);
+}
 
 if (argv['dry-run']) {
   console.log('\nScenarios:');
@@ -189,6 +214,7 @@ function generateReport(results: ScenarioResult[], mode: string): void {
       W: r.totalWorkers,
       P: r.processes,
       WPP: r.workersPerProcess,
+      lang: r.sdkLanguage,
       mode: r.sdkMode,
       handler: r.handlerType,
       cluster: r.cluster,
@@ -226,12 +252,12 @@ function generateReport(results: ScenarioResult[], mode: string): void {
   for (const [W, scenariosForW] of [...byW.entries()].sort((a, b) => a[0] - b[0])) {
     lines.push(`## W=${W} Total Workers`);
     lines.push('');
-    lines.push('| Topology | SDK Mode | Handler | Cluster | Throughput | Errors | Time (s) | Fairness | Status |');
-    lines.push('|----------|----------|---------|---------|------------|--------|----------|----------|--------|');
+    lines.push('| Topology | Lang | SDK Mode | Handler | Cluster | Throughput | Errors | Time (s) | Fairness | Status |');
+    lines.push('|----------|------|----------|---------|---------|------------|--------|----------|----------|--------|');
 
     for (const s of scenariosForW.sort((a, b) => b.throughput - a.throughput)) {
       lines.push(
-        `| ${s.P}×${s.WPP} | ${s.mode} | ${s.handler} | ${s.cluster} | ${s.throughput}/s | ${s.errors} | ${s.wallClockS} | ${s.fairness} | ${s.status} |`,
+        `| ${s.P}×${s.WPP} | ${s.lang} | ${s.mode} | ${s.handler} | ${s.cluster} | ${s.throughput}/s | ${s.errors} | ${s.wallClockS} | ${s.fairness} | ${s.status} |`,
       );
     }
     lines.push('');
@@ -240,12 +266,12 @@ function generateReport(results: ScenarioResult[], mode: string): void {
   // Cross-cutting: best topology per (W, mode, handler)
   lines.push('## Best Topology by Configuration');
   lines.push('');
-  lines.push('| W | SDK Mode | Handler | Best Topology | Throughput | Fairness |');
-  lines.push('|---|----------|---------|---------------|------------|----------|');
+  lines.push('| W | Lang | SDK Mode | Handler | Best Topology | Throughput | Fairness |');
+  lines.push('|---|------|----------|---------|---------------|------------|----------|');
 
   const grouped = new Map<string, typeof summary.scenarios>();
   for (const s of summary.scenarios.filter((s) => s.status === 'ok')) {
-    const key = `${s.W}-${s.mode}-${s.handler}`;
+    const key = `${s.W}-${s.lang}-${s.mode}-${s.handler}`;
     const arr = grouped.get(key) || [];
     arr.push(s);
     grouped.set(key, arr);
@@ -254,7 +280,7 @@ function generateReport(results: ScenarioResult[], mode: string): void {
   for (const [, group] of [...grouped.entries()].sort()) {
     const best = group.sort((a, b) => b.throughput - a.throughput)[0];
     lines.push(
-      `| ${best.W} | ${best.mode} | ${best.handler} | ${best.P}×${best.WPP} | ${best.throughput}/s | ${best.fairness} |`,
+      `| ${best.W} | ${best.lang} | ${best.mode} | ${best.handler} | ${best.P}×${best.WPP} | ${best.throughput}/s | ${best.fairness} |`,
     );
   }
   lines.push('');
@@ -267,6 +293,10 @@ function generateReport(results: ScenarioResult[], mode: string): void {
 
 async function runLocal(): Promise<void> {
   const { runScenarioLocal, restartContainer } = await import('./local-runner.js');
+
+  if (lanes > 1) {
+    console.warn(`Warning: --lanes ${lanes} ignored in local mode (local always runs sequentially).`);
+  }
 
   const mode = 'local';
   const results: ScenarioResult[] = [];
@@ -315,7 +345,7 @@ async function runLocal(): Promise<void> {
 }
 
 async function runGcp(): Promise<void> {
-  const { runScenarioGcp, provisionBrokerPool, teardownBrokerPool } = await import('./gcp-runner.js');
+  const { runScenarioGcp, provisionBrokerPool, teardownBrokerPool, resetBrokerPool } = await import('./gcp-runner.js');
 
   const runId = `run-${Date.now()}`;
   const mode = 'gcp';
@@ -324,15 +354,21 @@ async function runGcp(): Promise<void> {
     zone: str(argv.zone) || 'us-central1-a',
     bucket: str(argv.bucket) || 'camunda-perf-matrix',
     runId,
+    ...(argv.network ? { network: String(argv.network) } : {}),
+    ...(argv.subnetwork ? { subnetwork: String(argv.subnetwork) } : {}),
   };
 
   console.log(`GCP Run ID: ${runId}`);
   console.log(`Project: ${gcpOpts.project}, Zone: ${gcpOpts.zone}, Bucket: ${gcpOpts.bucket}`);
 
-  const results: ScenarioResult[] = [];
-  let completed = 0;
+  if (lanes > 1 && argv.local) {
+    console.warn('Warning: --lanes > 1 is only supported in GCP mode. Ignoring for local mode.');
+  }
 
-  // Group by cluster for broker pool reuse
+  // ── Distribute scenarios across lanes ──────────────────
+  // Group by cluster first (for broker pool reuse), then split across lanes.
+  // Each lane gets its own independent broker pools so results are isolated.
+
   const byCluster = new Map<ClusterConfig, typeof scenarios>();
   for (const s of scenarios) {
     const arr = byCluster.get(s.cluster) || [];
@@ -340,39 +376,107 @@ async function runGcp(): Promise<void> {
     byCluster.set(s.cluster, arr);
   }
 
+  // Build flat list of (cluster, scenario) pairs preserving cluster grouping
+  type ClusterGroup = { cluster: ClusterConfig; scenarios: typeof scenarios };
+  const clusterGroups: ClusterGroup[] = [];
   for (const [cluster, clusterScenarios] of byCluster) {
-    console.log(`\n--- Provisioning ${cluster} broker pool ---`);
-    const brokerPool = await provisionBrokerPool(gcpOpts, cluster);
-
-    for (const scenario of clusterScenarios) {
-      completed++;
-      const progress = `[${completed}/${scenarios.length}]`;
-
-      if (argv.resume && resultExists(scenario.id, mode)) {
-        console.log(`${progress} SKIP (exists): ${scenario.id}`);
-        const existing = JSON.parse(
-          fs.readFileSync(path.join(resultsDir(mode), `${scenario.id}.json`), 'utf-8'),
-        ) as ScenarioResult;
-        results.push(existing);
-        continue;
-      }
-
-      console.log(`\n${progress} Running: ${scenario.id}`);
-      const result = await runScenarioGcp(scenario, brokerPool, {
-        ...gcpOpts,
-        targetPerWorker,
-        scenarioTimeout,
-        preCreateCount,
-      });
-      results.push(result);
-      saveResult(result, mode);
-    }
-
-    console.log(`\n--- Tearing down ${cluster} broker pool ---`);
-    teardownBrokerPool(gcpOpts, brokerPool);
+    clusterGroups.push({ cluster, scenarios: clusterScenarios });
   }
 
-  generateReport(results, mode);
+  // Distribute cluster groups across lanes round-robin.
+  // If there are fewer cluster groups than lanes, some lanes will be empty.
+  // If there are more, lanes get multiple cluster groups.
+  const laneAssignments: ClusterGroup[][] = Array.from({ length: lanes }, () => []);
+  for (let i = 0; i < clusterGroups.length; i++) {
+    laneAssignments[i % lanes].push(clusterGroups[i]);
+  }
+
+  // Count scenarios per lane for logging
+  const laneCounts = laneAssignments.map((groups) =>
+    groups.reduce((sum, g) => sum + g.scenarios.length, 0),
+  );
+  if (lanes > 1) {
+    console.log(`Distributing across ${lanes} lanes: [${laneCounts.join(', ')}] scenarios`);
+  }
+
+  const allResults: ScenarioResult[] = [];
+  let globalCompleted = 0;
+
+  // ── Run a single lane ──────────────────────────────────
+  async function runLane(laneIndex: number, groups: ClusterGroup[]): Promise<ScenarioResult[]> {
+    const laneResults: ScenarioResult[] = [];
+    const laneTag = lanes > 1 ? ` [lane ${laneIndex}]` : '';
+    const laneRunId = lanes > 1 ? `${runId}-L${laneIndex}` : runId;
+
+    const laneGcpOpts = { ...gcpOpts, runId: laneRunId };
+
+    for (const { cluster, scenarios: clusterScenarios } of groups) {
+      console.log(`\n---${laneTag} Provisioning ${cluster} broker pool ---`);
+      const brokerPool = await provisionBrokerPool(laneGcpOpts, cluster);
+
+      let needsReset = false;
+
+      for (const scenario of clusterScenarios) {
+        globalCompleted++;
+        const progress = `[${globalCompleted}/${scenarios.length}]`;
+
+        if (argv.resume && resultExists(scenario.id, mode)) {
+          console.log(`${progress}${laneTag} SKIP (exists): ${scenario.id}`);
+          const existing = JSON.parse(
+            fs.readFileSync(path.join(resultsDir(mode), `${scenario.id}.json`), 'utf-8'),
+          ) as ScenarioResult;
+          laneResults.push(existing);
+          needsReset = true; // next non-skipped scenario should still reset
+          continue;
+        }
+
+        // Reset broker between scenarios for a clean baseline
+        if (needsReset) {
+          console.log(`\n${progress}${laneTag} Resetting broker pool for clean baseline...`);
+          const resetOk = await resetBrokerPool(laneGcpOpts, brokerPool);
+          if (!resetOk) {
+            console.error(`${laneTag} Broker reset failed — skipping remaining scenarios in ${cluster}`);
+            break;
+          }
+        }
+        needsReset = true;
+
+        console.log(`\n${progress}${laneTag} Running: ${scenario.id}`);
+        const result = await runScenarioGcp(scenario, brokerPool, {
+          ...laneGcpOpts,
+          targetPerWorker,
+          scenarioTimeout,
+          preCreateCount,
+        });
+        laneResults.push(result);
+        saveResult(result, mode);
+      }
+
+      console.log(`\n---${laneTag} Tearing down ${cluster} broker pool ---`);
+      teardownBrokerPool(laneGcpOpts, brokerPool);
+    }
+
+    return laneResults;
+  }
+
+  // ── Execute lanes ──────────────────────────────────────
+  if (lanes === 1) {
+    // Single lane — same as before, no extra overhead
+    const results = await runLane(0, laneAssignments[0] || []);
+    allResults.push(...results);
+  } else {
+    // Multi-lane — run all lanes concurrently
+    const lanePromises = laneAssignments
+      .filter((groups) => groups.length > 0)
+      .map((groups, i) => runLane(i, groups));
+
+    const laneResults = await Promise.all(lanePromises);
+    for (const results of laneResults) {
+      allResults.push(...results);
+    }
+  }
+
+  generateReport(allResults, mode);
 }
 
 // ─── Entry point ─────────────────────────────────────────

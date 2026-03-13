@@ -2,19 +2,64 @@
 
 Performance envelope tool for Camunda 8 SDK worker scaling. Answers: **"For N total workers, what's the optimal split between processes and workers-per-process?"**
 
-Tests every valid combination of (TotalWorkers, WorkersPerProcess) across SDK modes, handler types, and cluster sizes — either locally with Docker or at scale on Google Cloud.
+Tests every valid combination of (TotalWorkers, WorkersPerProcess) across SDK languages, SDK modes, handler types, and cluster sizes — either locally with Docker or at scale on Google Cloud.
 
 ## Matrix dimensions
 
 | Dimension | Values |
 |-----------|--------|
+| SDK language | `ts`, `python`, `csharp`, `java` |
 | Total workers (W) | 10, 20, 50 |
 | Workers per process (WPP) | 1, 2, 5, 10, 25, 50 |
-| SDK mode | `rest-balanced`, `grpc-poll` |
+| SDK mode | `rest`, `grpc` |
 | Handler type | `cpu` (sync), `http` (200ms async) |
 | Cluster | 1 broker, 3 brokers |
 
-Only valid combinations where W is divisible by WPP are generated (14 topologies). Full matrix: **112 scenarios**.
+Not all languages support all modes:
+
+| Language | Modes |
+|----------|-------|
+| TypeScript | `rest`, `grpc-polling` |
+| Python | `rest` |
+| C# | `rest` |
+| Java | `rest`, `grpc-streaming`, `grpc-polling` |
+
+Only valid combinations where W is divisible by WPP are generated (14 topologies × 7 language-mode combos × 2 handlers × 2 clusters). Full matrix: **~392 scenarios**.
+
+## Prerequisites
+
+### All modes
+
+- **Node.js 22+** and **npm** — required for the matrix orchestrator and TypeScript worker
+- **Docker Desktop** (local mode only) — runs the Camunda broker(s)
+
+### Polyglot workers (install the toolchains for languages you want to test)
+
+| Language | Toolchain | Version |
+|----------|-----------|---------|
+| TypeScript | Node.js + npm | 22+ (installed above) |
+| Python | Python + [uv](https://docs.astral.sh/uv/) | Python 3.10+, uv latest |
+| C# | [.NET SDK](https://dotnet.microsoft.com/download) | 8.0+ |
+| Java | JDK + [Maven](https://maven.apache.org/) | JDK 21+, Maven 3.8+ |
+
+## Installing dependencies
+
+```bash
+# TypeScript (orchestrator + TS worker) — always required
+npm install
+
+# Python worker
+uv sync
+
+# C# worker (builds a self-contained binary)
+dotnet publish src/workers/csharp-worker/CsharpWorker.csproj \
+  -c Release -r linux-x64 --self-contained
+
+# Java worker (builds an uber-jar)
+mvn -f src/workers/java-worker/pom.xml clean package -q
+```
+
+You only need to build the workers for languages you plan to test. The `--languages` CLI flag (see below) controls which languages are included in a run.
 
 ## Quick start (local mode)
 
@@ -26,14 +71,16 @@ npm install
 # Preview scenarios without executing
 npm run matrix:dry
 
-# Small smoke test (4 scenarios, ~5 min)
+# Small smoke test (~4 scenarios, ~5 min)
 npm run matrix:quick
 
-# Full local run (112 scenarios, ~9 hours)
+# Full local run (~392 scenarios)
 npm run matrix:local
 ```
 
 Requires Docker Desktop running. Results land in `results/local/`.
+
+> **Note:** Local mode currently runs only TypeScript workers. GCP mode supports all four languages.
 
 ## GCP mode
 
@@ -48,14 +95,14 @@ Your machine (or coordinator VM)
   │
   ├── Broker VM(s)         e2-standard-8, COS, runs camunda/camunda container
   │     ↕ internal network
-  └── Worker VM(s)         e2-standard-2, Debian 12, runs tsx worker-process.ts
+  └── Worker VM(s)         e2-standard-2, Debian 12, runs language-specific worker
         ↕ GCS
       Results bucket        barrier protocol + result JSON files
 ```
 
-Each scenario gets a clean broker restart and fresh ephemeral worker VMs. Workers coordinate via GCS (ready signals → GO flag → result upload).
+Each scenario gets a clean broker restart and fresh ephemeral worker VMs. Workers coordinate via GCS (ready signals → GO flag → result upload). All four language runtimes are installed on GCP worker VMs from their respective package managers (npm, pip, dotnet, JDK).
 
-### Prerequisites
+### GCP prerequisites
 
 1. **Google Cloud SDK** (`gcloud` and `gsutil` CLI tools)
 2. **A GCP project** with billing enabled
@@ -139,20 +186,28 @@ gcloud projects add-iam-policy-binding $GCP_PROJECT \
 ### Running on GCP
 
 ```bash
-# Full matrix (112 scenarios, sequential)
+# Full matrix (~392 scenarios, sequential)
 npx tsx src/run-matrix.ts \
   --project $GCP_PROJECT \
   --zone us-central1-a \
   --bucket camunda-perf-matrix
 
-# Subset run
+# Parallel execution with 4 lanes (~4x faster, needs ~500 vCPU quota)
 npx tsx src/run-matrix.ts \
   --project $GCP_PROJECT \
   --zone us-central1-a \
   --bucket camunda-perf-matrix \
+  --lanes 4
+
+# Subset run (TypeScript only, REST mode)
+npx tsx src/run-matrix.ts \
+  --project $GCP_PROJECT \
+  --zone us-central1-a \
+  --bucket camunda-perf-matrix \
+  --languages ts \
   --workers 10 \
   --wpp 1,2,5,10 \
-  --modes rest-balanced \
+  --modes rest \
   --clusters 1broker
 
 # Resume after interruption (skips scenarios with existing result files)
@@ -164,6 +219,76 @@ npx tsx src/run-matrix.ts \
 ```
 
 Results are written to `results/gcp/` with per-scenario JSON files and a summary report.
+
+### Running from a GCP control plane VM
+
+Instead of running from your laptop, you can run the orchestrator from a GCP VM. This avoids sleep/disconnect issues and keeps the control plane in the same network as workers.
+
+#### 1. Create the control plane VM
+
+```bash
+gcloud compute instances create perf-matrix-control \
+  --project $GCP_PROJECT \
+  --zone us-central1-a \
+  --machine-type e2-standard-4 \
+  --image-family debian-12 \
+  --image-project debian-cloud \
+  --scopes compute-rw,storage-full
+```
+
+The `--scopes compute-rw,storage-full` grants the VM's default service account permission to create/delete worker VMs and read/write GCS. If you prefer least-privilege, use the dedicated service account from step 4 above:
+
+```bash
+gcloud compute instances create perf-matrix-control \
+  --project $GCP_PROJECT \
+  --zone us-central1-a \
+  --machine-type e2-standard-4 \
+  --image-family debian-12 \
+  --image-project debian-cloud \
+  --service-account perf-matrix@${GCP_PROJECT}.iam.gserviceaccount.com \
+  --scopes cloud-platform
+```
+
+#### 2. Install dependencies on the VM
+
+```bash
+gcloud compute ssh perf-matrix-control --zone us-central1-a
+
+# Node.js 22
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
+sudo apt-get install -y nodejs
+
+# .NET SDK 8 (for C# worker build)
+# See https://learn.microsoft.com/en-us/dotnet/core/install/linux-debian
+
+# JDK 21 (for Java worker build)
+sudo apt-get install -y openjdk-21-jdk
+```
+
+#### 3. Clone and run
+
+```bash
+git clone <repo-url> && cd ts-performance-matrix
+npm install
+
+npx tsx src/run-matrix.ts \
+  --project $GCP_PROJECT \
+  --workers 10 --wpp 1 --handlers cpu \
+  --clusters 1broker --precreate 1000
+```
+
+> **Tip:** Since the control plane is Linux, the TS worker package tarball will contain linux-native binaries — no platform fix-up needed on workers.
+
+#### Networking
+
+If the control plane VM is in a non-default VPC, pass `--network` and `--subnetwork` so worker VMs are created in the same network:
+
+```bash
+npx tsx src/run-matrix.ts \
+  --project $GCP_PROJECT \
+  --network my-vpc --subnetwork my-subnet \
+  --workers 10 --wpp 1 --handlers cpu --clusters 1broker
+```
 
 ## CLI reference
 
@@ -177,11 +302,14 @@ MODES
 GCP OPTIONS
   --zone <zone>         GCE zone (default: us-central1-a)
   --bucket <name>       GCS bucket for coordination (default: camunda-perf-matrix)
+  --network <name>      VPC network for VMs (default: GCP project default)
+  --subnetwork <name>   Subnetwork for VMs (default: GCP project default)
 
 MATRIX FILTERS (comma-separated)
+  --languages ts,python SDK languages (default: ts,python,csharp,java)
   --workers 10,20       Total worker counts (default: 10,20,50)
   --wpp 1,2,5,10        Workers per process (default: 1,2,5,10,25,50)
-  --modes rest-balanced  SDK modes (default: rest-balanced,grpc-poll)
+  --modes rest           SDK modes (default: rest,grpc-streaming,grpc-polling)
   --handlers cpu,http   Handler types (default: cpu,http)
   --clusters 1broker    Cluster configs (default: 1broker,3broker)
 
@@ -191,6 +319,7 @@ SCENARIO PARAMETERS
   --precreate 50000     Pre-create instance count (default: 50000)
 
 CONTROL
+  --lanes <n>           Parallel lanes, GCP only (default: 1)
   --resume              Skip scenarios with existing result files
   --dry-run             Print scenario list without executing
   --help                Show help
@@ -212,8 +341,8 @@ CONTROL
 ```
 results/
   local/                        # or gcp/
-    1broker-W10-P10x1-rest-balanced-cpu.json
-    1broker-W10-P5x2-rest-balanced-cpu.json
+    1broker-ts-W10-P10x1-rest-cpu.json
+    1broker-python-W10-P5x2-rest-cpu.json
     ...
     summary.json                # machine-readable summary
     REPORT.md                   # markdown tables with rankings
@@ -233,8 +362,10 @@ Each scenario JSON contains:
 | Worker VM | e2-standard-2 (2 vCPU, 8GB) | ~$0.07 |
 | GCS | Negligible for coordination files | ~$0 |
 
-**Sequential run** (112 scenarios × ~5 min): ~9 hours, ~$15  
-Worker VMs are ephemeral (created/destroyed per scenario), so cost scales with scenario count, not with peak parallelism.
+**Sequential run** (~392 scenarios × ~5 min): ~33 hours, ~$53  
+**4 lanes** (~392 scenarios): ~8 hours, ~$53 (same cost, faster wall-clock)  
+**8 lanes** (~392 scenarios): ~4 hours, ~$53  
+Worker VMs are ephemeral (created/destroyed per scenario), so cost scales with scenario count, not with parallelism. Lanes add broker VMs but reduce wall-clock time proportionally.
 
 ## Project structure
 
@@ -242,14 +373,36 @@ Worker VMs are ephemeral (created/destroyed per scenario), so cost scales with s
 src/
   config.ts             Matrix dimensions, topology generation, defaults
   types.ts              Result types, Jain fairness index
-  worker-process.ts     Runs inside each process/VM — creates WPP workers
+  run-matrix.ts         CLI entry point, orchestration, report generation
   local-runner.ts       Local execution (Docker + child processes)
   gcp-runner.ts         GCP execution (Compute Engine VMs + GCS coordination)
-  run-matrix.ts         CLI entry point, orchestration, report generation
+  worker-process.ts     TypeScript worker — runs inside each process/VM
+  ts-producer.ts        TypeScript producer — deploys BPMN + pre-creates instances
+  workers/
+    python-worker.py            Python worker (camunda-orchestration-sdk)
+    python-producer.py          Python producer — deploys + pre-creates via SDK
+    csharp-worker/
+      CsharpWorker.csproj       C# project (Camunda.Orchestration.Sdk)
+      Program.cs                C# worker + producer (--produce flag)
+    java-worker/
+      pom.xml                   Maven project (camunda-client-java)
+      mvnw                      Maven wrapper (JDK 21 required)
+      src/main/java/Worker.java Java worker + producer (--produce flag)
 docker/
   docker-compose.1broker.yaml   Single broker for local mode
   docker-compose.3broker.yaml   3-broker cluster for local mode
 fixtures/
   test-job-process.bpmn         Start → test-job ServiceTask → End
+pyproject.toml                  Python dependencies (managed by uv)
 results/                        Generated output (gitignored)
 ```
+
+## SDK packages
+
+| Language | Package | Registry |
+|----------|---------|----------|
+| TypeScript | `@camunda8/orchestration-cluster-api` | npm |
+| TypeScript (gRPC) | `@camunda8/sdk` | npm |
+| Python | `camunda-orchestration-sdk` | PyPI |
+| C# | `Camunda.Orchestration.Sdk` | NuGet |
+| Java | `io.camunda:camunda-client-java` | Maven Central |

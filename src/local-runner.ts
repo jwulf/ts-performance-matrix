@@ -270,13 +270,13 @@ export async function runScenarioLocal(
     scenarioTimeout: number;
   },
 ): Promise<ScenarioResult> {
-  const { topology, sdkMode, handlerType, cluster } = scenario;
+  const { topology, sdkLanguage, sdkMode, handlerType, cluster } = scenario;
   const { processes: P, workersPerProcess: WPP, totalWorkers: W } = topology;
   const composeFile = cluster === '3broker' ? COMPOSE_3BROKER : COMPOSE_1BROKER;
 
   console.log(`\n${'='.repeat(70)}`);
   console.log(`  [${scenario.id}]  ${P} processes × ${WPP} workers = ${W} total`);
-  console.log(`  cluster=${cluster}  sdk=${sdkMode}  handler=${handlerType}`);
+  console.log(`  cluster=${cluster}  lang=${sdkLanguage}  sdk=${sdkMode}  handler=${handlerType}`);
   console.log(`${'='.repeat(70)}`);
 
   // Restart container
@@ -285,7 +285,7 @@ export async function runScenarioLocal(
       return {
         scenarioId: scenario.id,
         ...topology,
-        sdkMode, handlerType, cluster,
+        sdkLanguage, sdkMode, handlerType, cluster,
         totalCompleted: 0, totalErrors: 0, wallClockS: 0,
         aggregateThroughput: 0, jainFairness: 0,
         processResults: [], serverMetrics: null,
@@ -437,7 +437,7 @@ export async function runScenarioLocal(
   const result: ScenarioResult = {
     scenarioId: scenario.id,
     ...topology,
-    sdkMode, handlerType, cluster,
+    sdkLanguage, sdkMode, handlerType, cluster,
     totalCompleted, totalErrors,
     wallClockS, aggregateThroughput,
     jainFairness: fairness,
