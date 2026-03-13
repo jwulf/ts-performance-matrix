@@ -24,7 +24,7 @@ os.environ["CAMUNDA_REST_ADDRESS"] = BROKER_REST_URL
 os.environ["CAMUNDA_AUTH_STRATEGY"] = "NONE"
 
 from camunda_orchestration_sdk import CamundaAsyncClient
-from camunda_orchestration_sdk.models import ProcessCreationByKey
+from camunda_orchestration_sdk.models import ProcessCreationByKey, ProcessInstanceCreationInstructionByKeyVariables
 
 BPMN_PATH = os.environ.get("BPMN_PATH", "")
 PRECREATE_COUNT = int(os.environ.get("PRECREATE_COUNT", "0"))
@@ -57,6 +57,9 @@ async def main():
         chars = string.ascii_letters + string.digits
         payload = "".join(random.choices(chars, k=PAYLOAD_SIZE_KB * 1024))
 
+        variables = ProcessInstanceCreationInstructionByKeyVariables()
+        variables.additional_properties = {"data": payload}
+
         # Pre-create with concurrency control
         created = 0
         errors = 0
@@ -73,7 +76,7 @@ async def main():
                     await client.create_process_instance(
                         data=ProcessCreationByKey(
                             process_definition_key=process_def_key,
-                            variables={"data": payload},
+                            variables=variables,
                         )
                     )
                     created += 1
