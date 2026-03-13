@@ -406,7 +406,7 @@ async function runGcp(): Promise<void> {
   async function runLane(laneIndex: number, groups: ClusterGroup[]): Promise<ScenarioResult[]> {
     const laneResults: ScenarioResult[] = [];
     const laneTag = lanes > 1 ? ` [lane ${laneIndex}]` : '';
-    const laneRunId = lanes > 1 ? `${runId}-L${laneIndex}` : runId;
+    const laneRunId = lanes > 1 ? `${runId}-l${laneIndex}` : runId;
 
     const laneGcpOpts = { ...gcpOpts, runId: laneRunId };
 

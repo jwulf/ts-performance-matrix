@@ -231,20 +231,22 @@ gcloud compute instances create perf-matrix-control \
   --project $GCP_PROJECT \
   --zone us-central1-a \
   --machine-type e2-standard-4 \
-  --image-family debian-12 \
-  --image-project debian-cloud \
-  --scopes compute-rw,storage-full
+  --image-family ubuntu-2510-amd64 \
+  --image-project ubuntu-os-cloud \
+  --boot-disk-size 50GB \
+  --scopes cloud-platform
 ```
 
-The `--scopes compute-rw,storage-full` grants the VM's default service account permission to create/delete worker VMs and read/write GCS. If you prefer least-privilege, use the dedicated service account from step 4 above:
+The `--scopes cloud-platform` grants the VM's default service account permission to create/delete worker VMs and read/write GCS. If you prefer least-privilege, use the dedicated service account from step 4 above:
 
 ```bash
 gcloud compute instances create perf-matrix-control \
   --project $GCP_PROJECT \
   --zone us-central1-a \
   --machine-type e2-standard-4 \
-  --image-family debian-12 \
-  --image-project debian-cloud \
+  --image-family ubuntu-2510-amd64 \
+  --image-project ubuntu-os-cloud \
+  --boot-disk-size 50GB \
   --service-account perf-matrix@${GCP_PROJECT}.iam.gserviceaccount.com \
   --scopes cloud-platform
 ```
@@ -254,21 +256,15 @@ gcloud compute instances create perf-matrix-control \
 ```bash
 gcloud compute ssh perf-matrix-control --zone us-central1-a
 
-# Node.js 22
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
-sudo apt-get install -y nodejs
-
-# .NET SDK 8 (for C# worker build)
-# See https://learn.microsoft.com/en-us/dotnet/core/install/linux-debian
-
-# JDK 21 (for Java worker build)
-sudo apt-get install -y openjdk-21-jdk
+git clone <repo-url> && cd ts-performance-matrix
+sudo bash scripts/setup-control-plane.sh
 ```
 
-#### 3. Clone and run
+This installs Node.js 22, Python 3 + uv, .NET SDK 8.0, and JDK 21.
+
+#### 3. Install and run
 
 ```bash
-git clone <repo-url> && cd ts-performance-matrix
 npm install
 
 npx tsx src/run-matrix.ts \
@@ -388,6 +384,8 @@ src/
       pom.xml                   Maven project (camunda-client-java)
       mvnw                      Maven wrapper (JDK 21 required)
       src/main/java/Worker.java Java worker + producer (--produce flag)
+scripts/
+  setup-control-plane.sh        Installs all toolchains on a GCP control plane VM
 docker/
   docker-compose.1broker.yaml   Single broker for local mode
   docker-compose.3broker.yaml   3-broker cluster for local mode
