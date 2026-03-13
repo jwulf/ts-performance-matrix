@@ -383,12 +383,19 @@ async function runGcp(): Promise<void> {
     clusterGroups.push({ cluster, scenarios: clusterScenarios });
   }
 
-  // Distribute cluster groups across lanes round-robin.
-  // If there are fewer cluster groups than lanes, some lanes will be empty.
-  // If there are more, lanes get multiple cluster groups.
+  // Distribute scenarios across lanes evenly.
+  // For each cluster group, split its scenarios into `lanes` chunks so every lane
+  // gets a slice of every cluster (each lane provisions its own broker pool).
   const laneAssignments: ClusterGroup[][] = Array.from({ length: lanes }, () => []);
-  for (let i = 0; i < clusterGroups.length; i++) {
-    laneAssignments[i % lanes].push(clusterGroups[i]);
+  for (const { cluster, scenarios: clusterScenarios } of clusterGroups) {
+    const chunkSize = Math.ceil(clusterScenarios.length / lanes);
+    for (let l = 0; l < lanes; l++) {
+      const start = l * chunkSize;
+      const slice = clusterScenarios.slice(start, start + chunkSize);
+      if (slice.length > 0) {
+        laneAssignments[l].push({ cluster, scenarios: slice });
+      }
+    }
   }
 
   // Count scenarios per lane for logging
