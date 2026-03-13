@@ -5,5 +5,5 @@ description = "Python worker dependencies for Camunda performance matrix"
 requires-python = ">=3.10"
 
 dependencies = [
-    "camunda-orchestration-sdk>=8.9.0a0",
+    "camunda-orchestration-sdk>=8.9.0.dev0",
 ]

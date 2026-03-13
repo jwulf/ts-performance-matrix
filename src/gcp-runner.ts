@@ -138,6 +138,12 @@ function buildWorkerPackage(opts: GcpOptions, language: SdkLanguage): string {
 
   switch (language) {
     case 'ts': {
+      const nodeModules = path.join(pkgDir, 'node_modules');
+      if (!fs.existsSync(nodeModules)) {
+        throw new Error(
+          `node_modules not found at ${nodeModules}. Run 'npm install' before starting a GCP run.`,
+        );
+      }
       const tarPath = `/tmp/perf-matrix-worker-ts-${opts.runId}.tar.gz`;
       spawnChecked('tar', [
         'czf', tarPath,
