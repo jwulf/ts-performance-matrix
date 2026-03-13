@@ -345,7 +345,14 @@ async function runLocal(): Promise<void> {
 }
 
 async function runGcp(): Promise<void> {
-  const { runScenarioGcp, provisionBrokerPool, teardownBrokerPool, resetBrokerPool } = await import('./gcp-runner.js');
+  const { runScenarioGcp, provisionBrokerPool, teardownBrokerPool, resetBrokerPool, cleanupAllVms } = await import('./gcp-runner.js');
+
+  // On Ctrl-C, destroy all provisioned VMs before exiting
+  process.on('SIGINT', () => {
+    console.log('\n\nSIGINT received — cleaning up all GCP VMs...');
+    cleanupAllVms();
+    process.exit(130);
+  });
 
   const runId = `run-${Date.now()}`;
   const mode = 'gcp';
@@ -415,7 +422,7 @@ async function runGcp(): Promise<void> {
     const laneTag = lanes > 1 ? ` [lane ${laneIndex}]` : '';
     const laneRunId = lanes > 1 ? `${runId}-l${laneIndex}` : runId;
 
-    const laneGcpOpts = { ...gcpOpts, runId: laneRunId };
+    const laneGcpOpts = { ...gcpOpts, runId: laneRunId, laneTag: laneTag || undefined };
 
     for (const { cluster, scenarios: clusterScenarios } of groups) {
       console.log(`\n---${laneTag} Provisioning ${cluster} broker pool ---`);

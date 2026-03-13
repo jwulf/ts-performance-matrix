@@ -19,6 +19,42 @@ import { GCP_DEFAULTS } from './config.js';
 import type { ScenarioResult, ProcessResult } from './types.js';
 import { jainFairness } from './types.js';
 
+// ─── Active VM tracking (for SIGINT cleanup) ────────────
+
+const activeVms = new Map<string, GcpOptions>();
+
+function trackVm(opts: GcpOptions, vmName: string): void {
+  activeVms.set(vmName, opts);
+}
+
+function untrackVms(vmNames: string[]): void {
+  for (const n of vmNames) activeVms.delete(n);
+}
+
+/** Delete all tracked VMs (called on SIGINT). */
+function cleanupAllVms(): void {
+  if (activeVms.size === 0) return;
+  // Group by project+zone so we can batch
+  const groups = new Map<string, { opts: GcpOptions; names: string[] }>();
+  for (const [name, opts] of activeVms) {
+    const key = `${opts.project}/${opts.zone}`;
+    const g = groups.get(key) || { opts, names: [] };
+    g.names.push(name);
+    groups.set(key, g);
+  }
+  for (const { opts, names } of groups.values()) {
+    console.log(`[gcp] SIGINT cleanup: deleting ${names.length} VMs in ${opts.project}/${opts.zone}...`);
+    gcloud([
+      'compute', 'instances', 'delete', ...names,
+      '--project', opts.project,
+      '--zone', opts.zone,
+      '--quiet',
+    ], 180_000);
+  }
+  activeVms.clear();
+  console.log('[gcp] SIGINT cleanup complete.');
+}
+
 // ─── Types ───────────────────────────────────────────────
 
 interface GcpOptions {
@@ -28,6 +64,7 @@ interface GcpOptions {
   runId: string;
   network?: string;
   subnetwork?: string;
+  laneTag?: string;
 }
 
 interface BrokerPool {
@@ -135,9 +172,10 @@ function logPoolHealth(opts: GcpOptions, pool: BrokerPool): void {
     6: 'DNS resolution failed',
     56: 'connection reset',
   };
+  const tag = opts.laneTag ?? '';
   for (let i = 0; i < pool.vmNames.length; i++) {
     const probe = probeBrokerHealth(opts, pool.vmNames[i], pool.internalIps[i]);
-    const tag = probe.healthy ? '✓' : '⏳';
+    const icon = probe.healthy ? '✓' : '⏳';
     let detail: string;
     if (probe.healthy) {
       detail = probe.body.slice(0, 80);
@@ -149,7 +187,7 @@ function logPoolHealth(opts: GcpOptions, pool: BrokerPool): void {
     } else {
       detail = `HTTP ${probe.status} — ${probe.body.slice(0, 80)}`;
     }
-    console.log(`  [node ${i}] ${tag} ${pool.vmNames[i]}: ${detail}`);
+    console.log(`  ${tag} [node ${i}] ${icon} ${pool.vmNames[i]}: ${detail}`);
   }
 }
 
@@ -553,6 +591,7 @@ function createVm(
     return false;
   }
   console.log(`[gcp] Created VM: ${vmName}`);
+  trackVm(opts, vmName);
   return true;
 }
 
@@ -564,6 +603,7 @@ function deleteVms(opts: GcpOptions, vmNames: string[]): void {
     '--zone', opts.zone,
     '--quiet',
   ], 180_000);
+  untrackVms(vmNames);
   console.log(`[gcp] Deleted ${vmNames.length} VMs`);
 }
 
@@ -592,14 +632,14 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
 
   // Collect IPs for all nodes
   const internalIps = vmNames.map((vm) => getVmInternalIp(opts, vm));
-  console.log(`[gcp] Broker IPs: ${vmNames.map((n, i) => `${n}=${internalIps[i]}`).join(', ')}`);
+  console.log(`[gcp]${opts.laneTag ?? ''} Broker IPs: ${vmNames.map((n, i) => `${n}=${internalIps[i]}`).join(', ')}`);
 
   const pool: BrokerPool = { cluster, vmNames, internalIps };
 
   // Multi-broker: startup script only installed Docker + pulled image.
   // Now SSH in to start each container with initialContactPoints (all IPs known).
   if (clusterSize > 1) {
-    console.log(`[gcp] Waiting for Docker pull to complete on all ${clusterSize} nodes before starting cluster...`);
+    console.log(`[gcp]${opts.laneTag ?? ''} Waiting for Docker pull to complete on all ${clusterSize} nodes before starting cluster...`);
     // Wait for Docker to be ready on all nodes (pull can take a while)
     const pullDeadline = Date.now() + 600_000; // 10 min for pull
     while (Date.now() < pullDeadline) {
@@ -617,11 +657,11 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
       const cmd = brokerDockerRunCmd(i, clusterSize, internalIps);
       const r = gcloud(sshArgs(opts, vmNames[i], cmd), 60_000);
       if (r.exitCode !== 0) {
-        console.error(`[gcp] Failed to start broker ${vmNames[i]}: ${r.stderr}`);
+        console.error(`[gcp]${opts.laneTag ?? ''} Failed to start broker ${vmNames[i]}: ${r.stderr}`);
         deleteVms(opts, vmNames);
         return null;
       }
-      console.log(`[gcp] Started broker ${vmNames[i]} (node ${i}) with contact points`);
+      console.log(`[gcp]${opts.laneTag ?? ''} Started broker ${vmNames[i]} (node ${i}) with contact points`);
     }
   }
 
@@ -636,7 +676,7 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
     if (healthAttempt % 6 === 1) { // Log every ~30s
       const phase = elapsed < 60 ? '(installing Docker)' :
         elapsed < 180 ? '(pulling image + starting JVM)' : '(waiting for ready)';
-      console.log(`[gcp] Broker health poll ${phase} — ${elapsed}s / ${Math.round(healthTimeout / 1000)}s`);
+      console.log(`[gcp]${opts.laneTag ?? ''} Broker health poll ${phase} — ${elapsed}s / ${Math.round(healthTimeout / 1000)}s`);
       logPoolHealth(opts, pool);
     }
     if (checkPoolHealth(opts, pool)) {
@@ -648,16 +688,16 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
 
   if (!brokerReady) {
     const mins = Math.round(healthTimeout / 60_000);
-    console.error(`[gcp] FAILED: Broker pool not healthy after ${mins} min — dumping diagnostics:`);
+    console.error(`[gcp]${opts.laneTag ?? ''} FAILED: Broker pool not healthy after ${mins} min — dumping diagnostics:`);
     logPoolHealth(opts, pool);
     for (const vm of vmNames) {
-      console.error(`[gcp] Docker logs for ${vm}:\n${fetchBrokerLogs(opts, vm, 40)}`);
+      console.error(`[gcp]${opts.laneTag ?? ''} Docker logs for ${vm}:\n${fetchBrokerLogs(opts, vm, 40)}`);
     }
-    console.error(`[gcp] Cleaning up failed broker VMs...`);
+    console.error(`[gcp]${opts.laneTag ?? ''} Cleaning up failed broker VMs...`);
     deleteVms(opts, vmNames);
     return null;
   }
-  console.log(`[gcp] Broker pool ready (${clusterSize} nodes)`);
+  console.log(`[gcp]${opts.laneTag ?? ''} Broker pool ready (${clusterSize} nodes)`);
   return pool;
 }
 
@@ -712,21 +752,21 @@ async function resetBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<bool
     if (resetAttempt % 5 === 1) { // Log every ~15s
       const phase = elapsed < 30 ? '(restarting container)' :
         clusterSize > 1 && elapsed < 120 ? '(SWIM cluster sync)' : '(waiting for ready)';
-      console.log(`[gcp] Reset health poll ${phase} — ${elapsed}s / ${Math.round(healthTimeout / 1000)}s`);
+      console.log(`[gcp]${opts.laneTag ?? ''} Reset health poll ${phase} — ${elapsed}s / ${Math.round(healthTimeout / 1000)}s`);
       logPoolHealth(opts, pool);
     }
     if (checkPoolHealth(opts, pool)) {
-      console.log(`[gcp] Broker pool reset and healthy (all ${clusterSize} nodes)`);
+      console.log(`[gcp]${opts.laneTag ?? ''} Broker pool reset and healthy (all ${clusterSize} nodes)`);
       return true;
     }
     await new Promise((r) => setTimeout(r, 3000));
   }
 
   const mins = Math.round(healthTimeout / 60_000);
-  console.error(`[gcp] FAILED: Broker pool not healthy after reset (${mins} min) — dumping diagnostics:`);
+  console.error(`[gcp]${opts.laneTag ?? ''} FAILED: Broker pool not healthy after reset (${mins} min) — dumping diagnostics:`);
   logPoolHealth(opts, pool);
   for (const vm of pool.vmNames) {
-    console.error(`[gcp] Docker logs for ${vm}:\n${fetchBrokerLogs(opts, vm, 40)}`);
+    console.error(`[gcp]${opts.laneTag ?? ''} Docker logs for ${vm}:\n${fetchBrokerLogs(opts, vm, 40)}`);
   }
   return false;
 }
@@ -929,5 +969,5 @@ function errorResult(scenario: ScenarioConfig, message: string): ScenarioResult 
 
 // ─── Exports for orchestrator ────────────────────────────
 
-export { provisionBrokerPool, teardownBrokerPool, resetBrokerPool };
+export { provisionBrokerPool, teardownBrokerPool, resetBrokerPool, cleanupAllVms };
 export type { GcpOptions, BrokerPool };
