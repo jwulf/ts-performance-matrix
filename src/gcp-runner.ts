@@ -490,7 +490,7 @@ function getVmInternalIp(opts: GcpOptions, vmName: string): string {
 
 // ─── Broker pool management ──────────────────────────────
 
-async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Promise<BrokerPool> {
+async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Promise<BrokerPool | null> {
   const clusterSize = cluster === '3broker' ? 3 : 1;
   const vmNames: string[] = [];
 
@@ -523,7 +523,9 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
   }
 
   if (!brokerReady) {
-    throw new Error(`Broker pool failed health check after 10 min`);
+    console.error(`[gcp] Broker pool failed health check after 10 min — cleaning up`);
+    deleteVms(opts, vmNames);
+    return null;
   }
   console.log(`[gcp] Broker pool ready (${clusterSize} nodes)`);
   return { cluster, vmNames, internalIp: primaryIp };

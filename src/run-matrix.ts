@@ -420,6 +420,10 @@ async function runGcp(): Promise<void> {
     for (const { cluster, scenarios: clusterScenarios } of groups) {
       console.log(`\n---${laneTag} Provisioning ${cluster} broker pool ---`);
       const brokerPool = await provisionBrokerPool(laneGcpOpts, cluster);
+      if (!brokerPool) {
+        console.error(`${laneTag} Broker provisioning failed for ${cluster} — skipping ${clusterScenarios.length} scenarios`);
+        continue;
+      }
 
       let needsReset = false;
 
@@ -475,7 +479,12 @@ async function runGcp(): Promise<void> {
     // Multi-lane — run all lanes concurrently
     const lanePromises = laneAssignments
       .filter((groups) => groups.length > 0)
-      .map((groups, i) => runLane(i, groups));
+      .map((groups, i) =>
+        runLane(i, groups).catch((err) => {
+          console.error(`[lane ${i}] Fatal lane error:`, err);
+          return [] as ScenarioResult[];
+        }),
+      );
 
     const laneResults = await Promise.all(lanePromises);
     for (const results of laneResults) {
