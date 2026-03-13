@@ -33,7 +33,15 @@ interface GcpOptions {
 interface BrokerPool {
   cluster: ClusterConfig;
   vmNames: string[];
-  internalIp: string; // IP of the primary broker (REST + gRPC)
+  internalIps: string[]; // IPs of all broker nodes (index 0 = primary)
+}
+
+/** Result of a single health check probe. */
+interface HealthProbe {
+  healthy: boolean;
+  status: number | null;
+  body: string;
+  error: string;
 }
 
 // ─── VM name helpers ─────────────────────────────────────
@@ -75,24 +83,66 @@ function sshArgs(opts: GcpOptions, vmName: string, command: string, timeoutMs = 
   return args;
 }
 
-/** Check broker health — direct curl when on same VPC, SSH otherwise. */
-function checkBrokerHealth(opts: GcpOptions, vmName: string, internalIp: string): boolean {
+/** Probe a single broker's health endpoint. Returns detailed diagnostics. */
+function probeBrokerHealth(opts: GcpOptions, vmName: string, internalIp: string): HealthProbe {
   if (isRunningOnGcpVm()) {
-    // Direct curl from same VPC
+    // Direct curl from same VPC — use -s (silent) + -w for HTTP code, not -f (fail-silent)
     const r = childProcess.spawnSync('curl', [
-      '-sf', '--connect-timeout', '3', `http://${internalIp}:9600/actuator/health/status`,
+      '-s', '--connect-timeout', '3',
+      '-w', '\n%{http_code}',
+      `http://${internalIp}:9600/actuator/health/status`,
     ], { encoding: 'utf-8', timeout: 10_000 });
-    return r.status === 0;
+    if (r.status !== 0) {
+      return { healthy: false, status: null, body: '', error: r.stderr?.trim() || `curl exit ${r.status}` };
+    }
+    const lines = (r.stdout || '').trim().split('\n');
+    const httpCode = parseInt(lines.pop() || '0', 10);
+    const body = lines.join('\n').trim();
+    return { healthy: httpCode === 200, status: httpCode, body, error: '' };
   }
   // SSH into broker and curl localhost
+  const curlCmd = `curl -s --connect-timeout 3 -w '\\n%{http_code}' http://localhost:9600/actuator/health/status`;
   const r = gcloud([
     'compute', 'ssh', vmName,
     '--project', opts.project,
     '--zone', opts.zone,
     '--tunnel-through-iap',
-    '--command', 'curl -sf --connect-timeout 3 http://localhost:9600/actuator/health/status',
+    '--command', curlCmd,
   ], 30_000);
-  return r.exitCode === 0;
+  if (r.exitCode !== 0) {
+    return { healthy: false, status: null, body: '', error: r.stderr?.trim() || `ssh exit ${r.exitCode}` };
+  }
+  const lines = (r.stdout || '').trim().split('\n');
+  const httpCode = parseInt(lines.pop() || '0', 10);
+  const body = lines.join('\n').trim();
+  return { healthy: httpCode === 200, status: httpCode, body, error: '' };
+}
+
+/** Check that ALL brokers in a pool are healthy. Returns true only if every node responds 200. */
+function checkPoolHealth(opts: GcpOptions, pool: BrokerPool): boolean {
+  for (let i = 0; i < pool.vmNames.length; i++) {
+    const probe = probeBrokerHealth(opts, pool.vmNames[i], pool.internalIps[i]);
+    if (!probe.healthy) return false;
+  }
+  return true;
+}
+
+/** Log health status of every node in the pool. */
+function logPoolHealth(opts: GcpOptions, pool: BrokerPool): void {
+  for (let i = 0; i < pool.vmNames.length; i++) {
+    const probe = probeBrokerHealth(opts, pool.vmNames[i], pool.internalIps[i]);
+    const tag = probe.healthy ? '✓' : '✗';
+    const detail = probe.error
+      ? `error: ${probe.error}`
+      : `HTTP ${probe.status} — ${probe.body.slice(0, 120)}`;
+    console.log(`  [node ${i}] ${tag} ${pool.vmNames[i]}: ${detail}`);
+  }
+}
+
+/** Fetch docker logs from a broker VM (last N lines). */
+function fetchBrokerLogs(opts: GcpOptions, vmName: string, lines = 30): string {
+  const r = gcloud(sshArgs(opts, vmName, `docker logs camunda-broker --tail ${lines} 2>&1`), 30_000);
+  return r.exitCode === 0 ? r.stdout : `(failed to fetch logs: ${r.stderr})`;
 }
 
 // ─── Shell helpers ───────────────────────────────────────
@@ -501,11 +551,14 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
     vmNames.push(vmName);
   }
 
-  // Wait for health check on primary broker
-  const primaryIp = getVmInternalIp(opts, vmNames[0]);
-  console.log(`[gcp] Broker primary IP: ${primaryIp}`);
+  // Collect IPs for all nodes
+  const internalIps = vmNames.map((vm) => getVmInternalIp(opts, vm));
+  console.log(`[gcp] Broker IPs: ${vmNames.map((n, i) => `${n}=${internalIps[i]}`).join(', ')}`);
 
-  const healthTimeout = 600_000; // 10 min (Docker install + image pull is slow)
+  const pool: BrokerPool = { cluster, vmNames, internalIps };
+
+  // Timeout is longer for 3-broker (SWIM protocol sync + 3 Docker pulls)
+  const healthTimeout = clusterSize > 1 ? 900_000 : 600_000; // 15 min / 10 min
   const healthDeadline = Date.now() + healthTimeout;
   let brokerReady = false;
   let healthAttempt = 0;
@@ -514,8 +567,9 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
     const elapsed = Math.round((Date.now() - (healthDeadline - healthTimeout)) / 1000);
     if (healthAttempt % 6 === 1) { // Log every ~30s
       console.log(`[gcp] Waiting for broker health check... (${elapsed}s elapsed)`);
+      logPoolHealth(opts, pool);
     }
-    if (checkBrokerHealth(opts, vmNames[0], primaryIp)) {
+    if (checkPoolHealth(opts, pool)) {
       brokerReady = true;
       break;
     }
@@ -523,12 +577,18 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
   }
 
   if (!brokerReady) {
-    console.error(`[gcp] Broker pool failed health check after 10 min — cleaning up`);
+    const mins = Math.round(healthTimeout / 60_000);
+    console.error(`[gcp] Broker pool failed health check after ${mins} min — diagnostics:`);
+    logPoolHealth(opts, pool);
+    for (const vm of vmNames) {
+      console.error(`[gcp] Docker logs for ${vm}:\n${fetchBrokerLogs(opts, vm, 40)}`);
+    }
+    console.error(`[gcp] Cleaning up failed broker VMs...`);
     deleteVms(opts, vmNames);
     return null;
   }
   console.log(`[gcp] Broker pool ready (${clusterSize} nodes)`);
-  return { cluster, vmNames, internalIp: primaryIp };
+  return pool;
 }
 
 function teardownBrokerPool(opts: GcpOptions, pool: BrokerPool): void {
@@ -596,8 +656,8 @@ async function resetBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<bool
     console.log(`[gcp] Reset broker ${vmName} (node ${nodeId})`);
   }
 
-  // Wait for primary broker health check
-  const healthTimeout = 180_000; // 3 min
+  // Wait for all brokers to be healthy (3-broker needs SWIM sync time)
+  const healthTimeout = clusterSize > 1 ? 300_000 : 180_000; // 5 min / 3 min
   const healthDeadline = Date.now() + healthTimeout;
   let resetAttempt = 0;
   while (Date.now() < healthDeadline) {
@@ -605,15 +665,21 @@ async function resetBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<bool
     const elapsed = Math.round((Date.now() - (healthDeadline - healthTimeout)) / 1000);
     if (resetAttempt % 5 === 1) { // Log every ~15s
       console.log(`[gcp] Waiting for broker health after reset... (${elapsed}s elapsed)`);
+      logPoolHealth(opts, pool);
     }
-    if (checkBrokerHealth(opts, pool.vmNames[0], pool.internalIp)) {
-      console.log(`[gcp] Broker pool reset and healthy`);
+    if (checkPoolHealth(opts, pool)) {
+      console.log(`[gcp] Broker pool reset and healthy (all ${clusterSize} nodes)`);
       return true;
     }
     await new Promise((r) => setTimeout(r, 3000));
   }
 
-  console.error(`[gcp] Broker pool failed health check after reset`);
+  const mins = Math.round(healthTimeout / 60_000);
+  console.error(`[gcp] Broker pool failed health check after reset (${mins} min) — diagnostics:`);
+  logPoolHealth(opts, pool);
+  for (const vm of pool.vmNames) {
+    console.error(`[gcp] Docker logs for ${vm}:\n${fetchBrokerLogs(opts, vm, 40)}`);
+  }
   return false;
 }
 
@@ -669,12 +735,12 @@ export async function runScenarioGcp(
 ): Promise<ScenarioResult> {
   const { topology, sdkLanguage, sdkMode, handlerType, cluster } = scenario;
   const { processes: P, workersPerProcess: WPP, totalWorkers: W } = topology;
-  const brokerRestUrl = `http://${brokerPool.internalIp}:8080`;
-  const brokerGrpcUrl = `${brokerPool.internalIp}:26500`;
+  const brokerRestUrl = `http://${brokerPool.internalIps[0]}:8080`;
+  const brokerGrpcUrl = `${brokerPool.internalIps[0]}:26500`;
 
   console.log(`\n${'='.repeat(70)}`);
   console.log(`  [${scenario.id}]  ${P} processes × ${WPP} workers = ${W} total (GCP)`);
-  console.log(`  broker=${brokerPool.internalIp}  lang=${sdkLanguage}  sdk=${sdkMode}  handler=${handlerType}`);
+  console.log(`  broker=${brokerPool.internalIps[0]}  lang=${sdkLanguage}  sdk=${sdkMode}  handler=${handlerType}`);
   console.log(`${'='.repeat(70)}`);
 
   const scenarioGcsPrefix = `${opts.runId}/scenarios/${scenario.id}`;
