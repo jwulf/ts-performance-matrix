@@ -360,10 +360,12 @@ function brokerDockerRunCmd(
     `-e ZEEBE_BROKER_CLUSTER_NODEID=${nodeId}`,
     `-e ZEEBE_BROKER_NETWORK_HOST=0.0.0.0`,
   ];
-  // Multi-broker: each node needs to know all peers for SWIM discovery
+  // Multi-broker: each node needs to know all peers for SWIM discovery,
+  // and must advertise its own IP (not 0.0.0.0) so peers can reach it.
   if (clusterSize > 1 && contactPointIps.length > 0) {
     const points = contactPointIps.map((ip) => `${ip}:26502`).join(',');
     envs.push(`-e ZEEBE_BROKER_CLUSTER_INITIALCONTACTPOINTS=${points}`);
+    envs.push(`-e ZEEBE_BROKER_NETWORK_ADVERTISEDHOST=${contactPointIps[nodeId]}`);
   }
   envs.push(
     `-e 'CAMUNDA_DATABASE_URL=jdbc:h2:mem:cpt;DB_CLOSE_DELAY=-1;MODE=PostgreSQL'`,
@@ -597,11 +599,11 @@ export PATH=/opt/jdk/bin:$PATH
 # Download worker jar
 mkdir -p /opt/worker
 gsutil cp gs://${opts.bucket}/${opts.runId}/java-worker.jar /opt/worker/
+cd /opt/worker
 
 ${barrierReady}
 
 # Run worker
-cd /opt/worker
 ${envBlock} \\
 java -jar java-worker.jar
 
