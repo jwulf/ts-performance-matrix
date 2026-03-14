@@ -494,7 +494,7 @@ async function runGcp(): Promise<void> {
       }
 
       console.log(`\n---${laneTag} Tearing down ${cluster} broker pool ---`);
-      teardownBrokerPool(laneGcpOpts, brokerPool);
+      await teardownBrokerPool(laneGcpOpts, brokerPool);
     }
 
     return laneResults;

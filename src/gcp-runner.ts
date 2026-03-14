@@ -43,13 +43,21 @@ function cleanupAllVms(): void {
     groups.set(key, g);
   }
   for (const { opts, names } of groups.values()) {
-    console.log(`[gcp] SIGINT cleanup: deleting ${names.length} VMs in ${opts.project}/${opts.zone}...`);
-    gcloud([
-      'compute', 'instances', 'delete', ...names,
-      '--project', opts.project,
-      '--zone', opts.zone,
-      '--quiet',
-    ], 180_000);
+    // gcloud can handle ~100 VMs per call; batch if more
+    const batchSize = 50;
+    for (let i = 0; i < names.length; i += batchSize) {
+      const batch = names.slice(i, i + batchSize);
+      console.log(`[gcp] SIGINT cleanup: deleting ${batch.length} VMs in ${opts.project}/${opts.zone} (batch ${Math.floor(i / batchSize) + 1})...`);
+      const r = gcloud([
+        'compute', 'instances', 'delete', ...batch,
+        '--project', opts.project,
+        '--zone', opts.zone,
+        '--quiet',
+      ], 300_000);
+      if (r.exitCode !== 0) {
+        console.error(`[gcp] SIGINT cleanup batch failed: ${r.stderr?.trim() || r.stdout?.trim() || `exit ${r.exitCode}`}`);
+      }
+    }
   }
   activeVms.clear();
   console.log('[gcp] SIGINT cleanup complete.');
@@ -662,16 +670,21 @@ async function createVm(
   return true;
 }
 
-function deleteVms(opts: GcpOptions, vmNames: string[]): void {
+async function deleteVms(opts: GcpOptions, vmNames: string[]): Promise<void> {
   if (vmNames.length === 0) return;
-  gcloud([
+  const r = await gcloudAsync([
     'compute', 'instances', 'delete', ...vmNames,
     '--project', opts.project,
     '--zone', opts.zone,
     '--quiet',
-  ], 180_000);
+  ], 300_000);
   untrackVms(vmNames);
-  console.log(`[gcp] Deleted ${vmNames.length} VMs`);
+  if (r.exitCode !== 0) {
+    const detail = r.stderr?.trim() || r.stdout?.trim() || `exit ${r.exitCode}`;
+    console.error(`[gcp] Warning: deleteVms may have partially failed (${vmNames.length} VMs): ${detail}`);
+  } else {
+    console.log(`[gcp] Deleted ${vmNames.length} VMs`);
+  }
 }
 
 async function getVmInternalIp(opts: GcpOptions, vmName: string): Promise<string> {
@@ -706,7 +719,7 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
     const failed = vmNames.filter((_, i) => !createResults[i]);
     console.error(`[gcp]${opts.laneTag ?? ''} Broker VM creation failed for: ${failed.join(', ')}`);
     const created = vmNames.filter((_, i) => createResults[i]);
-    if (created.length > 0) deleteVms(opts, created);
+    if (created.length > 0) await deleteVms(opts, created);
     return null;
   }
 
@@ -734,7 +747,7 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
     }
     if (!pullComplete) {
       console.error(`[gcp]${opts.laneTag ?? ''} Docker image pull timed out after 10 min — aborting cluster start`);
-      deleteVms(opts, vmNames);
+      await deleteVms(opts, vmNames);
       return null;
     }
 
@@ -744,7 +757,7 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
       const r = await gcloudAsync(sshArgs(opts, vmNames[i], cmd), 60_000);
       if (r.exitCode !== 0) {
         console.error(`[gcp]${opts.laneTag ?? ''} Failed to start broker ${vmNames[i]}: ${r.stderr}`);
-        deleteVms(opts, vmNames);
+        await deleteVms(opts, vmNames);
         return null;
       }
       console.log(`[gcp]${opts.laneTag ?? ''} Started broker ${vmNames[i]} (node ${i}) with contact points`);
@@ -780,15 +793,15 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
       console.error(`[gcp]${opts.laneTag ?? ''} Docker logs for ${vm}:\n${await fetchBrokerLogs(opts, vm, 40)}`);
     }
     console.error(`[gcp]${opts.laneTag ?? ''} Cleaning up failed broker VMs...`);
-    deleteVms(opts, vmNames);
+    await deleteVms(opts, vmNames);
     return null;
   }
   console.log(`[gcp]${opts.laneTag ?? ''} Broker pool ready (${clusterSize} nodes)`);
   return pool;
 }
 
-function teardownBrokerPool(opts: GcpOptions, pool: BrokerPool): void {
-  deleteVms(opts, pool.vmNames);
+async function teardownBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<void> {
+  await deleteVms(opts, pool.vmNames);
 }
 
 /**
@@ -946,7 +959,7 @@ export async function runScenarioGcp(
     const vmOk = await createVm(opts, vmName, GCP_DEFAULTS.workerMachineType, script, ['perf-worker']);
     if (!vmOk) {
       console.error(`  [${scenario.id}] Worker VM creation failed — aborting scenario`);
-      if (workerVmNames.length > 0) deleteVms(opts, workerVmNames);
+      if (workerVmNames.length > 0) await deleteVms(opts, workerVmNames);
       return errorResult(scenario, `Worker VM creation failed: ${vmName}`);
     }
     workerVmNames.push(vmName);
@@ -988,7 +1001,7 @@ export async function runScenarioGcp(
       }
     }
     // Cleanup
-    deleteVms(opts, workerVmNames);
+    await deleteVms(opts, workerVmNames);
     return errorResult(scenario, 'Workers failed to become ready');
   }
 
@@ -1037,7 +1050,7 @@ export async function runScenarioGcp(
   }
 
   // Cleanup worker VMs
-  deleteVms(opts, workerVmNames);
+  await deleteVms(opts, workerVmNames);
 
   // Aggregate
   const totalCompleted = processResults.reduce((s, p) => s + p.completed, 0);
