@@ -23,44 +23,86 @@ import { jainFairness } from './types.js';
 
 const activeVms = new Map<string, GcpOptions>();
 
+// Stored on first VM creation so cleanupAllVms can do a prefix-based sweep
+// to catch VMs that were never tracked (e.g., createVm interrupted mid-creation).
+let runDefaultOpts: GcpOptions | null = null;
+let runVmTagPrefix: string | null = null;
+
 function trackVm(opts: GcpOptions, vmName: string): void {
   activeVms.set(vmName, opts);
+  if (!runDefaultOpts) {
+    runDefaultOpts = opts;
+    // Extract the run tag from the VM name (e.g., "pb-94770-l0-..." → "94770")
+    const match = vmName.match(/^p[bw]-(\d+)-/);
+    if (match) runVmTagPrefix = match[1];
+  }
 }
 
 function untrackVms(vmNames: string[]): void {
   for (const n of vmNames) activeVms.delete(n);
 }
 
-/** Delete all tracked VMs (called on SIGINT). */
+/** Delete all tracked VMs, then sweep for any untracked orphans by run prefix. */
 function cleanupAllVms(): void {
-  if (activeVms.size === 0) return;
-  // Group by project+zone so we can batch
-  const groups = new Map<string, { opts: GcpOptions; names: string[] }>();
-  for (const [name, opts] of activeVms) {
-    const key = `${opts.project}/${opts.zone}`;
-    const g = groups.get(key) || { opts, names: [] };
-    g.names.push(name);
-    groups.set(key, g);
+  // Phase 1: delete tracked VMs
+  if (activeVms.size > 0) {
+    // Group by project+zone so we can batch
+    const groups = new Map<string, { opts: GcpOptions; names: string[] }>();
+    for (const [name, opts] of activeVms) {
+      const key = `${opts.project}/${opts.zone}`;
+      const g = groups.get(key) || { opts, names: [] };
+      g.names.push(name);
+      groups.set(key, g);
+    }
+    for (const { opts, names } of groups.values()) {
+      // gcloud can handle ~100 VMs per call; batch if more
+      const batchSize = 50;
+      for (let i = 0; i < names.length; i += batchSize) {
+        const batch = names.slice(i, i + batchSize);
+        console.log(`[gcp] cleanup: deleting ${batch.length} tracked VMs (batch ${Math.floor(i / batchSize) + 1})...`);
+        const r = gcloud([
+          'compute', 'instances', 'delete', ...batch,
+          '--project', opts.project,
+          '--zone', opts.zone,
+          '--quiet',
+        ], 300_000);
+        if (r.exitCode !== 0) {
+          console.error(`[gcp] cleanup batch failed: ${r.stderr?.trim() || r.stdout?.trim() || `exit ${r.exitCode}`}`);
+        }
+      }
+    }
+    activeVms.clear();
   }
-  for (const { opts, names } of groups.values()) {
-    // gcloud can handle ~100 VMs per call; batch if more
-    const batchSize = 50;
-    for (let i = 0; i < names.length; i += batchSize) {
-      const batch = names.slice(i, i + batchSize);
-      console.log(`[gcp] SIGINT cleanup: deleting ${batch.length} VMs in ${opts.project}/${opts.zone} (batch ${Math.floor(i / batchSize) + 1})...`);
+
+  // Phase 2: prefix-based sweep to catch untracked orphans
+  // (e.g., VMs created between GCP API call and trackVm, or partially-failed deletions
+  // that untracked on the old code path)
+  if (runVmTagPrefix && runDefaultOpts) {
+    const opts = runDefaultOpts;
+    const filter = `name~'^p[bw]-${runVmTagPrefix}-'`;
+    const list = gcloud([
+      'compute', 'instances', 'list',
+      '--project', opts.project,
+      '--zones', opts.zone,
+      '--filter', filter,
+      '--format=value(name)',
+    ], 60_000);
+    const orphans = list.stdout.trim().split('\n').filter(Boolean);
+    if (orphans.length > 0) {
+      console.log(`[gcp] cleanup: found ${orphans.length} untracked orphan VM(s) by prefix sweep: ${orphans.join(', ')}`);
       const r = gcloud([
-        'compute', 'instances', 'delete', ...batch,
+        'compute', 'instances', 'delete', ...orphans,
         '--project', opts.project,
         '--zone', opts.zone,
         '--quiet',
       ], 300_000);
       if (r.exitCode !== 0) {
-        console.error(`[gcp] SIGINT cleanup batch failed: ${r.stderr?.trim() || r.stdout?.trim() || `exit ${r.exitCode}`}`);
+        console.error(`[gcp] orphan sweep failed: ${r.stderr?.trim() || r.stdout?.trim() || `exit ${r.exitCode}`}`);
       }
     }
   }
-  activeVms.clear();
-  console.log('[gcp] SIGINT cleanup complete.');
+
+  console.log('[gcp] cleanup complete.');
 }
 
 // ─── Types ───────────────────────────────────────────────
@@ -207,6 +249,55 @@ async function logPoolHealth(opts: GcpOptions, pool: BrokerPool): Promise<void> 
 async function fetchBrokerLogs(opts: GcpOptions, vmName: string, lines = 30): Promise<string> {
   const r = await gcloudAsync(sshArgs(opts, vmName, `docker logs camunda-broker --tail ${lines} 2>&1`), 30_000);
   return r.exitCode === 0 ? r.stdout : `(failed to fetch logs: ${r.stderr})`;
+}
+
+/** Capture comprehensive diagnostics from a broker VM for debugging startup failures. */
+async function dumpBrokerDiagnostics(opts: GcpOptions, vmName: string, context: string): Promise<void> {
+  console.error(`[gcp]${opts.laneTag ?? ''} ── Diagnostics for ${vmName} (${context}) ──`);
+
+  // 1. Serial console output (startup script logs, visible even if SSH fails)
+  const serial = gcloud([
+    'compute', 'instances', 'get-serial-port-output', vmName,
+    '--project', opts.project,
+    '--zone', opts.zone,
+  ], 30_000);
+  if (serial.exitCode === 0) {
+    const lines = serial.stdout.trim().split('\n');
+    const tail = lines.slice(-60).join('\n');
+    console.error(`[gcp]${opts.laneTag ?? ''} Serial console tail (${vmName}):\n${tail}`);
+  } else {
+    console.error(`[gcp]${opts.laneTag ?? ''} Serial console unavailable for ${vmName}: ${serial.stderr?.trim()}`);
+  }
+
+  // 2. Docker daemon status + image list + pull/container state
+  const diagCmd = [
+    'echo "=== systemctl status docker ==="',
+    'systemctl status docker --no-pager -l 2>&1 || true',
+    'echo "=== docker images ==="',
+    'docker images 2>&1 || true',
+    'echo "=== docker ps -a ==="',
+    'docker ps -a 2>&1 || true',
+    'echo "=== docker system info (storage) ==="',
+    'docker system df 2>&1 || true',
+    'echo "=== disk usage ==="',
+    'df -h / 2>&1 || true',
+    'echo "=== journalctl docker (last 30) ==="',
+    'journalctl -u docker --no-pager -n 30 2>&1 || true',
+  ].join(' && ');
+  const diag = await gcloudAsync(sshArgs(opts, vmName, diagCmd), 30_000);
+  if (diag.exitCode === 0 || diag.stdout) {
+    console.error(`[gcp]${opts.laneTag ?? ''} Docker diagnostics (${vmName}):\n${diag.stdout}`);
+  } else {
+    console.error(`[gcp]${opts.laneTag ?? ''} Docker diagnostics failed for ${vmName}: ${diag.stderr?.trim()}`);
+  }
+
+  // 3. Broker container logs (if container exists)
+  const logs = await fetchBrokerLogs(opts, vmName, 40);
+  if (!logs.startsWith('(failed')) {
+    console.error(`[gcp]${opts.laneTag ?? ''} Broker container logs (${vmName}):\n${logs}`);
+  }
+
+  console.error(`[gcp]${opts.laneTag ?? ''} ── End diagnostics for ${vmName} ──`);
 }
 
 // ─── Shell helpers ───────────────────────────────────────
@@ -697,11 +788,13 @@ async function deleteVms(opts: GcpOptions, vmNames: string[]): Promise<void> {
     '--zone', opts.zone,
     '--quiet',
   ], 300_000);
-  untrackVms(vmNames);
   if (r.exitCode !== 0) {
     const detail = r.stderr?.trim() || r.stdout?.trim() || `exit ${r.exitCode}`;
     console.error(`[gcp] Warning: deleteVms may have partially failed (${vmNames.length} VMs): ${detail}`);
+    // Do NOT untrack on failure — leave them in activeVms so cleanupAllVms() can retry.
+    // gcloud returns non-zero if ANY VM fails, even if most succeeded.
   } else {
+    untrackVms(vmNames);
     console.log(`[gcp] Deleted ${vmNames.length} VMs`);
   }
 }
@@ -792,6 +885,10 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
       const phase2Elapsed = Math.round((Date.now() - phase2Start) / 1000);
       const pending = vmNames.filter((_, i) => !nodeReady[i]).join(', ');
       console.error(`[gcp]${opts.laneTag ?? ''} [PHASE 2/${totalPhases}] FAILED after ${phase2Elapsed}s — Docker pull timed out. Stuck nodes: ${pending}`);
+      const stuckVms = vmNames.filter((_, i) => !nodeReady[i]);
+      for (const vm of stuckVms) {
+        await dumpBrokerDiagnostics(opts, vm, 'Docker pull timeout');
+      }
       await deleteVms(opts, vmNames);
       return null;
     }
@@ -807,6 +904,7 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
       if (r.exitCode !== 0) {
         const phase3Elapsed = Math.round((Date.now() - phase3Start) / 1000);
         console.error(`[gcp]${opts.laneTag ?? ''} [PHASE 3/${totalPhases}] FAILED after ${phase3Elapsed}s — broker ${vmNames[i]}: ${r.stderr}`);
+        await dumpBrokerDiagnostics(opts, vmNames[i], 'container start failure');
         await deleteVms(opts, vmNames);
         return null;
       }
@@ -841,6 +939,7 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
     if (!pullDone) {
       const pullElapsed = Math.round((Date.now() - pullStart) / 1000);
       console.error(`[gcp]${opts.laneTag ?? ''} [PHASE 2/${totalPhases}] FAILED after ${pullElapsed}s — Docker pull timed out on ${vmNames[0]}`);
+      await dumpBrokerDiagnostics(opts, vmNames[0], 'Docker pull timeout');
       await deleteVms(opts, vmNames);
       return null;
     }

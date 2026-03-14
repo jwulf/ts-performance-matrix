@@ -538,6 +538,11 @@ async function runGcp(): Promise<void> {
     }
   }
 
+  // Final safety sweep: delete any VMs that survived partial deletion failures
+  // during normal scenario teardown. This catches VMs that were untrackable
+  // because gcloud returned non-zero (partial batch failure).
+  cleanupAllVms();
+
   generateReport(allResults, mode);
 }
 
