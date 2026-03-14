@@ -5,6 +5,10 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit",
+    "build:java-worker": "src/workers/java-worker/mvnw -f src/workers/java-worker/pom.xml package -q -DskipTests",
+    "build:csharp-worker": "dotnet publish src/workers/csharp-worker -c Release -r linux-x64 --self-contained true",
+    "build:workers": "npm run build:java-worker && npm run build:csharp-worker",
+    "prematrix:gcp": "npm run build:workers",
     "matrix:local": "node --import tsx/esm src/run-matrix.ts --local",
     "matrix:gcp": "node --import tsx/esm src/run-matrix.ts",
     "matrix:dry": "node --import tsx/esm src/run-matrix.ts --local --dry-run",
