@@ -720,9 +720,13 @@ async function getVmInternalIp(opts: GcpOptions, vmName: string): Promise<string
 
 async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Promise<BrokerPool | null> {
   const clusterSize = cluster === '3broker' ? 3 : 1;
+  const totalPhases = clusterSize > 1 ? 4 : 2; // multi: create, pull, start, health; single: create, health
+  const provisionStart = Date.now();
   const vmNames: string[] = [];
 
-  // Create all broker VMs in parallel (async — doesn't block other lanes)
+  // ── PHASE 1: Create VMs ──
+  const phase1Start = Date.now();
+  console.log(`[gcp]${opts.laneTag ?? ''} [PHASE 1/${totalPhases}] Creating ${clusterSize} broker VM(s)...`);
   const createPromises = [];
   for (let i = 0; i < clusterSize; i++) {
     const vmName = `pb-${vmTag(opts.runId)}-${i}`;
@@ -734,13 +738,15 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
     );
   }
   const createResults = await Promise.all(createPromises);
+  const phase1Elapsed = Math.round((Date.now() - phase1Start) / 1000);
   if (createResults.some((ok) => !ok)) {
     const failed = vmNames.filter((_, i) => !createResults[i]);
-    console.error(`[gcp]${opts.laneTag ?? ''} Broker VM creation failed for: ${failed.join(', ')}`);
+    console.error(`[gcp]${opts.laneTag ?? ''} [PHASE 1/${totalPhases}] FAILED after ${phase1Elapsed}s — VM creation failed for: ${failed.join(', ')}`);
     const created = vmNames.filter((_, i) => createResults[i]);
     if (created.length > 0) await deleteVms(opts, created);
     return null;
   }
+  console.log(`[gcp]${opts.laneTag ?? ''} [PHASE 1/${totalPhases}] VMs created in ${phase1Elapsed}s`);
 
   // Collect IPs for all nodes (in parallel)
   const internalIps = await Promise.all(vmNames.map((vm) => getVmInternalIp(opts, vm)));
@@ -751,7 +757,9 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
   // Multi-broker: startup script only pulled image (COS has Docker pre-installed).
   // Now SSH in to start each container with initialContactPoints (all IPs known).
   if (clusterSize > 1) {
-    console.log(`[gcp]${opts.laneTag ?? ''} Waiting for Docker pull to complete on all ${clusterSize} nodes before starting cluster...`);
+    // ── PHASE 2: Docker pull ──
+    const phase2Start = Date.now();
+    console.log(`[gcp]${opts.laneTag ?? ''} [PHASE 2/${totalPhases}] Waiting for Docker pull on ${clusterSize} nodes...`);
     // Wait for Docker to be ready on all nodes (pull can take a while)
     const pullDeadline = Date.now() + 600_000; // 10 min for pull
     let pullComplete = false;
@@ -765,36 +773,49 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
       await new Promise((r) => setTimeout(r, 10_000));
     }
     if (!pullComplete) {
-      console.error(`[gcp]${opts.laneTag ?? ''} Docker image pull timed out after 10 min — aborting cluster start`);
+      const phase2Elapsed = Math.round((Date.now() - phase2Start) / 1000);
+      console.error(`[gcp]${opts.laneTag ?? ''} [PHASE 2/${totalPhases}] FAILED after ${phase2Elapsed}s — Docker pull timed out`);
       await deleteVms(opts, vmNames);
       return null;
     }
+    const phase2Elapsed = Math.round((Date.now() - phase2Start) / 1000);
+    console.log(`[gcp]${opts.laneTag ?? ''} [PHASE 2/${totalPhases}] Docker pull complete in ${phase2Elapsed}s`);
 
-    // Start containers with contact points
+    // ── PHASE 3: Start containers ──
+    const phase3Start = Date.now();
+    console.log(`[gcp]${opts.laneTag ?? ''} [PHASE 3/${totalPhases}] Starting broker containers with contact points...`);
     for (let i = 0; i < clusterSize; i++) {
       const cmd = brokerDockerRunCmd(i, clusterSize, internalIps);
       const r = await gcloudAsync(sshArgs(opts, vmNames[i], cmd), 60_000);
       if (r.exitCode !== 0) {
-        console.error(`[gcp]${opts.laneTag ?? ''} Failed to start broker ${vmNames[i]}: ${r.stderr}`);
+        const phase3Elapsed = Math.round((Date.now() - phase3Start) / 1000);
+        console.error(`[gcp]${opts.laneTag ?? ''} [PHASE 3/${totalPhases}] FAILED after ${phase3Elapsed}s — broker ${vmNames[i]}: ${r.stderr}`);
         await deleteVms(opts, vmNames);
         return null;
       }
       console.log(`[gcp]${opts.laneTag ?? ''} Started broker ${vmNames[i]} (node ${i}) with contact points`);
     }
+    const phase3Elapsed = Math.round((Date.now() - phase3Start) / 1000);
+    console.log(`[gcp]${opts.laneTag ?? ''} [PHASE 3/${totalPhases}] Containers started in ${phase3Elapsed}s`);
   }
 
+  // ── PHASE (final): Health check ──
+  const healthPhase = totalPhases;
+  const healthPhaseStart = Date.now();
   // Timeout is shorter with COS (no Docker install), but JVM still needs time
   const healthTimeout = clusterSize > 1 ? 600_000 : 420_000; // 10 min / 7 min
   const healthDeadline = Date.now() + healthTimeout;
+  console.log(`[gcp]${opts.laneTag ?? ''} [PHASE ${healthPhase}/${totalPhases}] Waiting for broker health (timeout ${Math.round(healthTimeout / 60_000)} min)...`);
   let brokerReady = false;
   let healthAttempt = 0;
   while (Date.now() < healthDeadline) {
     healthAttempt++;
-    const elapsed = Math.round((Date.now() - (healthDeadline - healthTimeout)) / 1000);
+    const elapsed = Math.round((Date.now() - healthPhaseStart) / 1000);
     if (healthAttempt % 6 === 1) { // Log every ~30s
-      const phase = elapsed < 60 ? '(pulling image)' :
-        elapsed < 180 ? '(starting JVM)' : '(waiting for ready)';
-      console.log(`[gcp]${opts.laneTag ?? ''} Broker health poll ${phase} — ${elapsed}s / ${Math.round(healthTimeout / 1000)}s`);
+      const subphase = clusterSize === 1
+        ? (elapsed < 60 ? '(pull + JVM starting)' : elapsed < 180 ? '(JVM starting)' : '(waiting for ready)')
+        : (elapsed < 120 ? '(JVM starting + SWIM sync)' : '(waiting for ready)');
+      console.log(`[gcp]${opts.laneTag ?? ''} [PHASE ${healthPhase}/${totalPhases}] health poll ${subphase} — ${elapsed}s / ${Math.round(healthTimeout / 1000)}s`);
       await logPoolHealth(opts, pool);
     }
     if (await checkPoolHealth(opts, pool)) {
@@ -805,8 +826,9 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
   }
 
   if (!brokerReady) {
-    const mins = Math.round(healthTimeout / 60_000);
-    console.error(`[gcp]${opts.laneTag ?? ''} FAILED: Broker pool not healthy after ${mins} min — dumping diagnostics:`);
+    const healthElapsed = Math.round((Date.now() - healthPhaseStart) / 1000);
+    const totalElapsed = Math.round((Date.now() - provisionStart) / 1000);
+    console.error(`[gcp]${opts.laneTag ?? ''} [PHASE ${healthPhase}/${totalPhases}] FAILED after ${healthElapsed}s — broker not healthy (total provisioning: ${totalElapsed}s)`);
     await logPoolHealth(opts, pool);
     for (const vm of vmNames) {
       console.error(`[gcp]${opts.laneTag ?? ''} Docker logs for ${vm}:\n${await fetchBrokerLogs(opts, vm, 40)}`);
@@ -815,7 +837,10 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
     await deleteVms(opts, vmNames);
     return null;
   }
-  console.log(`[gcp]${opts.laneTag ?? ''} Broker pool ready (${clusterSize} nodes)`);
+  const healthElapsed = Math.round((Date.now() - healthPhaseStart) / 1000);
+  const totalElapsed = Math.round((Date.now() - provisionStart) / 1000);
+  console.log(`[gcp]${opts.laneTag ?? ''} [PHASE ${healthPhase}/${totalPhases}] Brokers healthy in ${healthElapsed}s`);
+  console.log(`[gcp]${opts.laneTag ?? ''} Broker pool ready (${clusterSize} nodes) — total provisioning: ${totalElapsed}s`);
   return pool;
 }
 

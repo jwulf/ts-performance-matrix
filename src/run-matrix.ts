@@ -513,11 +513,20 @@ async function runGcp(): Promise<void> {
     const results = await runLane(0, laneAssignments[0] || []);
     allResults.push(...results);
   } else {
-    // Multi-lane — run all lanes concurrently
+    // Multi-lane — run all lanes concurrently, with staggered starts to avoid
+    // overwhelming the GCP API and control VM with 16+ simultaneous gcloud processes.
+    // Each lane waits (laneIndex * 15s) before starting broker provisioning.
     const lanePromises = laneAssignments
       .filter((groups) => groups.length > 0)
       .map((groups, i) =>
-        runLane(i, groups).catch((err) => {
+        (async () => {
+          if (i > 0) {
+            const delayMs = i * 15_000;
+            console.log(`[lane ${i}] Staggering start by ${delayMs / 1000}s to reduce API contention...`);
+            await new Promise((r) => setTimeout(r, delayMs));
+          }
+          return runLane(i, groups);
+        })().catch((err) => {
           console.error(`[lane ${i}] Fatal lane error:`, err);
           return [] as ScenarioResult[];
         }),
