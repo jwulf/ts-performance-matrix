@@ -781,29 +781,29 @@ function teardownBrokerPool(opts: GcpOptions, pool: BrokerPool): void {
 async function resetBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<boolean> {
   const clusterSize = pool.vmNames.length;
 
-  console.log(`[gcp] Resetting broker pool (${clusterSize} nodes)...`);
+  console.log(`[gcp]${opts.laneTag ?? ''} Resetting broker pool (${clusterSize} nodes)...`);
 
-  // Reset each broker VM via async SSH (doesn't block other lanes)
-  for (let i = 0; i < clusterSize; i++) {
-    const vmName = pool.vmNames[i];
-    const nodeId = i;
+  // Reset all broker VMs in parallel via async SSH
+  const resetResults = await Promise.all(
+    pool.vmNames.map((vmName, i) => {
+      const dockerRunCmd = brokerDockerRunCmd(i, clusterSize, pool.internalIps);
+      const resetScript = [
+        'docker stop camunda-broker 2>/dev/null || true',
+        'docker rm -v camunda-broker 2>/dev/null || true',
+        'docker volume prune -f',
+        dockerRunCmd,
+      ].join(' && ');
+      return gcloudAsync(sshArgs(opts, vmName, resetScript), 120_000)
+        .then((r) => ({ vmName, nodeId: i, ...r }));
+    }),
+  );
 
-    const dockerRunCmd = brokerDockerRunCmd(nodeId, clusterSize, pool.internalIps);
-
-    const resetScript = [
-      'docker stop camunda-broker 2>/dev/null || true',
-      'docker rm -v camunda-broker 2>/dev/null || true',
-      'docker volume prune -f',
-      dockerRunCmd,
-    ].join(' && ');
-
-    const r = await gcloudAsync(sshArgs(opts, vmName, resetScript), 120_000);
-
+  for (const r of resetResults) {
     if (r.exitCode !== 0) {
-      console.error(`[gcp] Failed to reset broker ${vmName}: ${r.stderr}`);
+      console.error(`[gcp]${opts.laneTag ?? ''} Failed to reset broker ${r.vmName}: ${r.stderr}`);
       return false;
     }
-    console.log(`[gcp] Reset broker ${vmName} (node ${nodeId})`);
+    console.log(`[gcp]${opts.laneTag ?? ''} Reset broker ${r.vmName} (node ${r.nodeId})`);
   }
 
   // Wait for all brokers to be healthy (3-broker needs SWIM sync time)

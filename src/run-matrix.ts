@@ -373,8 +373,12 @@ async function runGcp(): Promise<void> {
   }
 
   // ── Distribute scenarios across lanes ──────────────────
-  // Group by cluster first (for broker pool reuse), then split across lanes.
-  // Each lane gets its own independent broker pools so results are isolated.
+  // Each lane gets ONE cluster type and keeps its broker pool for the entire run.
+  // Lanes are allocated proportionally: if 60% of scenarios are 1broker and 40%
+  // are 3broker, ~60% of lanes get 1broker work and ~40% get 3broker work.
+  // This minimises total broker VMs and avoids per-lane provisioning churn.
+
+  type ClusterGroup = { cluster: ClusterConfig; scenarios: typeof scenarios };
 
   const byCluster = new Map<ClusterConfig, typeof scenarios>();
   for (const s of scenarios) {
@@ -383,24 +387,36 @@ async function runGcp(): Promise<void> {
     byCluster.set(s.cluster, arr);
   }
 
-  // Build flat list of (cluster, scenario) pairs preserving cluster grouping
-  type ClusterGroup = { cluster: ClusterConfig; scenarios: typeof scenarios };
-  const clusterGroups: ClusterGroup[] = [];
-  for (const [cluster, clusterScenarios] of byCluster) {
-    clusterGroups.push({ cluster, scenarios: clusterScenarios });
+  // Allocate lanes proportionally to each cluster type (minimum 1 lane per type)
+  const clusterEntries = [...byCluster.entries()]; // [[cluster, scenarios], ...]
+  const totalScenarios = clusterEntries.reduce((s, [, sc]) => s + sc.length, 0);
+
+  // First pass: proportional allocation with floor
+  const clusterLaneCounts = new Map<ClusterConfig, number>();
+  let allocatedLanes = 0;
+  for (const [cluster, sc] of clusterEntries) {
+    const share = Math.max(1, Math.floor((sc.length / totalScenarios) * lanes));
+    clusterLaneCounts.set(cluster, share);
+    allocatedLanes += share;
+  }
+  // Distribute remainder to the cluster type(s) with the most scenarios
+  const sorted = clusterEntries.sort((a, b) => b[1].length - a[1].length);
+  let remainder = lanes - allocatedLanes;
+  for (const [cluster] of sorted) {
+    if (remainder <= 0) break;
+    clusterLaneCounts.set(cluster, clusterLaneCounts.get(cluster)! + 1);
+    remainder--;
   }
 
-  // Distribute scenarios across lanes evenly.
-  // For each cluster group, split its scenarios into `lanes` chunks so every lane
-  // gets a slice of every cluster (each lane provisions its own broker pool).
-  const laneAssignments: ClusterGroup[][] = Array.from({ length: lanes }, () => []);
-  for (const { cluster, scenarios: clusterScenarios } of clusterGroups) {
-    const chunkSize = Math.ceil(clusterScenarios.length / lanes);
-    for (let l = 0; l < lanes; l++) {
-      const start = l * chunkSize;
-      const slice = clusterScenarios.slice(start, start + chunkSize);
+  // Build lane assignments: each lane gets one cluster group
+  const laneAssignments: ClusterGroup[][] = [];
+  for (const [cluster, clusterScenarios] of clusterEntries) {
+    const numLanes = clusterLaneCounts.get(cluster)!;
+    const chunkSize = Math.ceil(clusterScenarios.length / numLanes);
+    for (let l = 0; l < numLanes; l++) {
+      const slice = clusterScenarios.slice(l * chunkSize, (l + 1) * chunkSize);
       if (slice.length > 0) {
-        laneAssignments[l].push({ cluster, scenarios: slice });
+        laneAssignments.push([{ cluster, scenarios: slice }]);
       }
     }
   }
@@ -410,7 +426,10 @@ async function runGcp(): Promise<void> {
     groups.reduce((sum, g) => sum + g.scenarios.length, 0),
   );
   if (lanes > 1) {
-    console.log(`Distributing across ${lanes} lanes: [${laneCounts.join(', ')}] scenarios`);
+    const clusterSummary = [...clusterLaneCounts.entries()]
+      .map(([c, n]) => `${c}=${n} lanes`)
+      .join(', ');
+    console.log(`Distributing across ${laneAssignments.length} lanes (${clusterSummary}): [${laneCounts.join(', ')}] scenarios`);
   }
 
   const allResults: ScenarioResult[] = [];
