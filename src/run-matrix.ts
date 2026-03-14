@@ -347,12 +347,16 @@ async function runLocal(): Promise<void> {
 async function runGcp(): Promise<void> {
   const { runScenarioGcp, provisionBrokerPool, teardownBrokerPool, resetBrokerPool, cleanupAllVms } = await import('./gcp-runner.js');
 
-  // On Ctrl-C, destroy all provisioned VMs before exiting
-  process.on('SIGINT', () => {
-    console.log('\n\nSIGINT received — cleaning up all GCP VMs...');
+  // Register signal handlers early — catch both SIGINT (Ctrl-C) and SIGTERM
+  // (sent by npm/parent process on shutdown). Must be registered before any VMs
+  // are created so cleanup always fires.
+  const signalCleanup = (signal: string) => {
+    console.log(`\n\n${signal} received — cleaning up all GCP VMs...`);
     cleanupAllVms();
-    process.exit(130);
-  });
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  };
+  process.on('SIGINT', () => signalCleanup('SIGINT'));
+  process.on('SIGTERM', () => signalCleanup('SIGTERM'));
 
   const runId = `run-${Date.now()}`;
   const mode = 'gcp';

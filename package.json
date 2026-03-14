@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit",
-    "matrix:local": "tsx src/run-matrix.ts --local",
-    "matrix:gcp": "tsx src/run-matrix.ts",
-    "matrix:dry": "tsx src/run-matrix.ts --local --dry-run",
-    "matrix:quick": "tsx src/run-matrix.ts --local --workers 10 --wpp 1,2,5,10 --modes rest-balanced --handlers cpu --clusters 1broker --target 1000 --precreate 5000"
+    "matrix:local": "node --import tsx/esm src/run-matrix.ts --local",
+    "matrix:gcp": "node --import tsx/esm src/run-matrix.ts",
+    "matrix:dry": "node --import tsx/esm src/run-matrix.ts --local --dry-run",
+    "matrix:quick": "node --import tsx/esm src/run-matrix.ts --local --workers 10 --wpp 1,2,5,10 --modes rest-balanced --handlers cpu --clusters 1broker --target 1000 --precreate 5000"
   },
   "dependencies": {
     "@camunda8/orchestration-cluster-api": "^8.9.0-alpha.13",
