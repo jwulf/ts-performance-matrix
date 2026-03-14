@@ -187,20 +187,20 @@ gcloud projects add-iam-policy-binding $GCP_PROJECT \
 
 ```bash
 # Full matrix (~392 scenarios, sequential)
-npx tsx src/run-matrix.ts \
+node --import tsx/esm src/run-matrix.ts \
   --project $GCP_PROJECT \
   --zone us-central1-a \
   --bucket camunda-perf-matrix
 
 # Parallel execution with 4 lanes (~4x faster, needs ~500 vCPU quota)
-npx tsx src/run-matrix.ts \
+node --import tsx/esm src/run-matrix.ts \
   --project $GCP_PROJECT \
   --zone us-central1-a \
   --bucket camunda-perf-matrix \
   --lanes 4
 
 # Subset run (TypeScript only, REST mode)
-npx tsx src/run-matrix.ts \
+node --import tsx/esm src/run-matrix.ts \
   --project $GCP_PROJECT \
   --zone us-central1-a \
   --bucket camunda-perf-matrix \
@@ -211,12 +211,14 @@ npx tsx src/run-matrix.ts \
   --clusters 1broker
 
 # Resume after interruption (skips scenarios with existing result files)
-npx tsx src/run-matrix.ts \
+node --import tsx/esm src/run-matrix.ts \
   --project $GCP_PROJECT \
   --zone us-central1-a \
   --bucket camunda-perf-matrix \
   --resume
 ```
+
+> **Important:** Use `node --import tsx/esm` instead of `npx tsx`. The `tsx` wrapper spawns a child process that swallows SIGINT/SIGTERM, preventing the Ctrl-C cleanup handler from running. With `node --import tsx/esm`, signals are delivered directly to the Node.js process, allowing it to cleanly delete all provisioned VMs before exiting.
 
 Results are written to `results/gcp/` with per-scenario JSON files and a summary report.
 
@@ -267,7 +269,7 @@ This installs Node.js 22, Python 3 + uv, .NET SDK 8.0, and JDK 21.
 ```bash
 npm install
 
-npx tsx src/run-matrix.ts \
+node --import tsx/esm src/run-matrix.ts \
   --project $GCP_PROJECT \
   --workers 10 --wpp 1 --handlers cpu \
   --clusters 1broker --precreate 1000
@@ -280,7 +282,7 @@ npx tsx src/run-matrix.ts \
 If the control plane VM is in a non-default VPC, pass `--network` and `--subnetwork` so worker VMs are created in the same network:
 
 ```bash
-npx tsx src/run-matrix.ts \
+node --import tsx/esm src/run-matrix.ts \
   --project $GCP_PROJECT \
   --network my-vpc --subnetwork my-subnet \
   --workers 10 --wpp 1 --handlers cpu --clusters 1broker
@@ -289,7 +291,7 @@ npx tsx src/run-matrix.ts \
 ## CLI reference
 
 ```
-npx tsx src/run-matrix.ts [options]
+node --import tsx/esm src/run-matrix.ts [options]
 
 MODES
   --local               Run locally (Docker + child processes)

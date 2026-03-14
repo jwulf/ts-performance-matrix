@@ -763,18 +763,35 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
     // Wait for Docker to be ready on all nodes (pull can take a while)
     const pullDeadline = Date.now() + 600_000; // 10 min for pull
     let pullComplete = false;
+    const nodeReady = new Array(clusterSize).fill(false);
+    let pullPollCount = 0;
     while (Date.now() < pullDeadline) {
+      pullPollCount++;
       const checks = await Promise.all(
         vmNames.map((vm) =>
           gcloudAsync(sshArgs(opts, vm, 'docker image inspect camunda/camunda:' + (process.env.CAMUNDA_VERSION || '8.9-SNAPSHOT') + ' >/dev/null 2>&1'), 30_000),
         ),
       );
-      if (checks.every((r) => r.exitCode === 0)) { pullComplete = true; break; }
+      checks.forEach((r, i) => {
+        if (r.exitCode === 0 && !nodeReady[i]) {
+          nodeReady[i] = true;
+          const elapsed = Math.round((Date.now() - phase2Start) / 1000);
+          console.log(`[gcp]${opts.laneTag ?? ''} [PHASE 2/${totalPhases}] Node ${i} (${vmNames[i]}) pull complete at ${elapsed}s`);
+        }
+      });
+      if (nodeReady.every(Boolean)) { pullComplete = true; break; }
+      if (pullPollCount % 6 === 0) { // Log status every ~60s
+        const elapsed = Math.round((Date.now() - phase2Start) / 1000);
+        const ready = nodeReady.filter(Boolean).length;
+        const pending = vmNames.filter((_, i) => !nodeReady[i]).join(', ');
+        console.log(`[gcp]${opts.laneTag ?? ''} [PHASE 2/${totalPhases}] Pull progress: ${ready}/${clusterSize} ready, waiting on: ${pending} — ${elapsed}s`);
+      }
       await new Promise((r) => setTimeout(r, 10_000));
     }
     if (!pullComplete) {
       const phase2Elapsed = Math.round((Date.now() - phase2Start) / 1000);
-      console.error(`[gcp]${opts.laneTag ?? ''} [PHASE 2/${totalPhases}] FAILED after ${phase2Elapsed}s — Docker pull timed out`);
+      const pending = vmNames.filter((_, i) => !nodeReady[i]).join(', ');
+      console.error(`[gcp]${opts.laneTag ?? ''} [PHASE 2/${totalPhases}] FAILED after ${phase2Elapsed}s — Docker pull timed out. Stuck nodes: ${pending}`);
       await deleteVms(opts, vmNames);
       return null;
     }
