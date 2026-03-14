@@ -720,7 +720,7 @@ async function getVmInternalIp(opts: GcpOptions, vmName: string): Promise<string
 
 async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Promise<BrokerPool | null> {
   const clusterSize = cluster === '3broker' ? 3 : 1;
-  const totalPhases = clusterSize > 1 ? 4 : 2; // multi: create, pull, start, health; single: create, health
+  const totalPhases = clusterSize > 1 ? 4 : 3; // multi: create, pull, start, health; single: create, pull, health
   const provisionStart = Date.now();
   const vmNames: string[] = [];
 
@@ -814,13 +814,45 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
     }
     const phase3Elapsed = Math.round((Date.now() - phase3Start) / 1000);
     console.log(`[gcp]${opts.laneTag ?? ''} [PHASE 3/${totalPhases}] Containers started in ${phase3Elapsed}s`);
+  } else {
+    // ── PHASE 2 (single-broker): Docker pull wait ──
+    // The startup script does `docker pull` then `docker run` inline.
+    // Poll for image presence so pull time doesn't eat into health budget.
+    const pullStart = Date.now();
+    console.log(`[gcp]${opts.laneTag ?? ''} [PHASE 2/${totalPhases}] Waiting for Docker pull on 1 node...`);
+    const pullDeadline = Date.now() + 600_000; // 10 min
+    let pullDone = false;
+    let pullPollCount = 0;
+    while (Date.now() < pullDeadline) {
+      pullPollCount++;
+      const r = await gcloudAsync(sshArgs(opts, vmNames[0], 'docker image inspect camunda/camunda:' + (process.env.CAMUNDA_VERSION || '8.9-SNAPSHOT') + ' >/dev/null 2>&1'), 30_000);
+      if (r.exitCode === 0) {
+        pullDone = true;
+        const elapsed = Math.round((Date.now() - pullStart) / 1000);
+        console.log(`[gcp]${opts.laneTag ?? ''} [PHASE 2/${totalPhases}] Node 0 (${vmNames[0]}) pull complete at ${elapsed}s`);
+        break;
+      }
+      if (pullPollCount % 6 === 0) {
+        const elapsed = Math.round((Date.now() - pullStart) / 1000);
+        console.log(`[gcp]${opts.laneTag ?? ''} [PHASE 2/${totalPhases}] Pull progress: waiting on ${vmNames[0]} — ${elapsed}s`);
+      }
+      await new Promise((r) => setTimeout(r, 10_000));
+    }
+    if (!pullDone) {
+      const pullElapsed = Math.round((Date.now() - pullStart) / 1000);
+      console.error(`[gcp]${opts.laneTag ?? ''} [PHASE 2/${totalPhases}] FAILED after ${pullElapsed}s — Docker pull timed out on ${vmNames[0]}`);
+      await deleteVms(opts, vmNames);
+      return null;
+    }
+    const pullElapsed = Math.round((Date.now() - pullStart) / 1000);
+    console.log(`[gcp]${opts.laneTag ?? ''} [PHASE 2/${totalPhases}] Docker pull complete in ${pullElapsed}s`);
   }
 
   // ── PHASE (final): Health check ──
   const healthPhase = totalPhases;
   const healthPhaseStart = Date.now();
   // Timeout is shorter with COS (no Docker install), but JVM still needs time
-  const healthTimeout = clusterSize > 1 ? 600_000 : 420_000; // 10 min / 7 min
+  const healthTimeout = clusterSize > 1 ? 600_000 : 300_000; // 10 min / 5 min (pull is now separate)
   const healthDeadline = Date.now() + healthTimeout;
   console.log(`[gcp]${opts.laneTag ?? ''} [PHASE ${healthPhase}/${totalPhases}] Waiting for broker health (timeout ${Math.round(healthTimeout / 60_000)} min)...`);
   let brokerReady = false;
@@ -830,7 +862,7 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
     const elapsed = Math.round((Date.now() - healthPhaseStart) / 1000);
     if (healthAttempt % 6 === 1) { // Log every ~30s
       const subphase = clusterSize === 1
-        ? (elapsed < 60 ? '(pull + JVM starting)' : elapsed < 180 ? '(JVM starting)' : '(waiting for ready)')
+        ? (elapsed < 120 ? '(JVM starting)' : '(waiting for ready)')
         : (elapsed < 120 ? '(JVM starting + SWIM sync)' : '(waiting for ready)');
       console.log(`[gcp]${opts.laneTag ?? ''} [PHASE ${healthPhase}/${totalPhases}] health poll ${subphase} — ${elapsed}s / ${Math.round(healthTimeout / 1000)}s`);
       await logPoolHealth(opts, pool);
