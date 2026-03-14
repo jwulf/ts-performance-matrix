@@ -395,6 +395,12 @@ set -e
 while ! docker info >/dev/null 2>&1; do sleep 1; done
 # Allow non-root users (SSH) to use Docker
 chmod 666 /var/run/docker.sock
+# COS has INPUT policy DROP — open Camunda ports for worker VMs
+iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
+iptables -A INPUT -p tcp --dport 9600 -j ACCEPT
+iptables -A INPUT -p tcp --dport 26500 -j ACCEPT
+iptables -A INPUT -p tcp --dport 26501 -j ACCEPT
+iptables -A INPUT -p tcp --dport 26502 -j ACCEPT
 docker pull camunda/camunda:${camundaVersion}
 echo "Docker ready, waiting for cluster start command"
 `;
@@ -406,6 +412,12 @@ set -e
 while ! docker info >/dev/null 2>&1; do sleep 1; done
 # Allow non-root users (SSH) to use Docker
 chmod 666 /var/run/docker.sock
+# COS has INPUT policy DROP — open Camunda ports for worker VMs
+iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
+iptables -A INPUT -p tcp --dport 9600 -j ACCEPT
+iptables -A INPUT -p tcp --dport 26500 -j ACCEPT
+iptables -A INPUT -p tcp --dport 26501 -j ACCEPT
+iptables -A INPUT -p tcp --dport 26502 -j ACCEPT
 docker pull camunda/camunda:${camundaVersion}
 ${brokerDockerRunCmd(nodeId, clusterSize)}
 echo "Broker ${nodeId} started"
@@ -485,6 +497,14 @@ echo "[leader] Producer finished"
     }
   }
 
+  // Startup log preamble — capture all output and upload to GCS on failure
+  const logPreamble = `#!/bin/bash
+exec > >(tee -a /var/log/worker-startup.log) 2>&1
+set -euo pipefail
+trap 'echo "[FATAL] Startup script failed at line $LINENO (exit $?)"; gsutil cp /var/log/worker-startup.log gs://${opts.bucket}/${opts.runId}/scenarios/${scenarioId}/logs/${workerId}-startup.log 2>/dev/null || true' ERR
+echo "=== Worker startup: ${workerId} at $(date) ==="
+`;
+
   const barrierReady = `${producerBlock}
 # Signal ready
 echo "1" | gsutil cp - gs://${opts.bucket}/${opts.runId}/scenarios/${scenarioId}/ready/${workerId}
@@ -503,9 +523,7 @@ sleep 60 && shutdown -h now &`;
 
   switch (config.sdkLanguage) {
     case 'ts':
-      return `#!/bin/bash
-set -e
-
+      return `${logPreamble}
 # Install Node.js 22
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs
@@ -527,9 +545,7 @@ ${uploadResult}
 `;
 
     case 'python':
-      return `#!/bin/bash
-set -e
-
+      return `${logPreamble}
 # Install Python 3 + Camunda SDK in a venv (avoids system package conflicts)
 apt-get update -qq && apt-get install -y -qq python3 python3-pip python3-venv > /dev/null
 python3 -m venv /opt/worker/venv
@@ -552,9 +568,7 @@ ${uploadResult}
 `;
 
     case 'csharp':
-      return `#!/bin/bash
-set -e
-
+      return `${logPreamble}
 # Download and extract self-contained C# worker
 mkdir -p /opt/worker
 gsutil cp gs://${opts.bucket}/${opts.runId}/worker-package-csharp.tar.gz /opt/worker/
@@ -572,9 +586,7 @@ ${uploadResult}
 `;
 
     case 'java':
-      return `#!/bin/bash
-set -e
-
+      return `${logPreamble}
 # Install JDK 21
 apt-get update -qq && apt-get install -y -qq wget > /dev/null
 wget -q https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.tar.gz -O /tmp/jdk21.tar.gz
@@ -921,7 +933,31 @@ export async function runScenarioGcp(
   );
 
   if (!workersReady) {
-    console.log(`  [${scenario.id}] TIMEOUT waiting for workers!`);
+    console.log(`  [${scenario.id}] TIMEOUT waiting for workers — fetching startup logs...`);
+    // Try to read worker startup logs from GCS (uploaded by ERR trap)
+    for (let p = 0; p < P; p++) {
+      const logPath = `${scenarioGcsPrefix}/logs/process-${p}-startup.log`;
+      const tmpLog = `/tmp/worker-startup-${Date.now()}.log`;
+      gsutil(['cp', `gs://${opts.bucket}/${logPath}`, tmpLog], 10_000);
+      try {
+        const log = fs.readFileSync(tmpLog, 'utf-8');
+        console.error(`  [${scenario.id}] Startup log for process-${p}:\n${log.slice(-2000)}`);
+        fs.unlinkSync(tmpLog);
+      } catch {
+        console.error(`  [${scenario.id}] No startup log for process-${p} (script may still be running)`);
+        // Also try serial console output for extra context
+        const serial = await gcloudAsync([
+          'compute', 'instances', 'get-serial-port-output', workerVmNames[p],
+          '--project', opts.project, '--zone', opts.zone,
+        ], 15_000);
+        if (serial.exitCode === 0 && serial.stdout.length > 0) {
+          // Show last 40 lines of serial output
+          const lines = serial.stdout.trim().split('\n');
+          const tail = lines.slice(-40).join('\n');
+          console.error(`  [${scenario.id}] Serial console tail for ${workerVmNames[p]}:\n${tail}`);
+        }
+      }
+    }
     // Cleanup
     deleteVms(opts, workerVmNames);
     return errorResult(scenario, 'Workers failed to become ready');
