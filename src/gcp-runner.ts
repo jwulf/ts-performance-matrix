@@ -643,16 +643,17 @@ async function createVm(
   if (opts.subnetwork) args.push('--subnet', opts.subnetwork);
   if (tags?.length) args.push('--tags', tags.join(','));
 
-  const r = await gcloudAsync(args, 180_000);
+  const r = await gcloudAsync(args, 300_000);
   // gcloud writes informational "Created [url]" to stderr, not stdout.
   // If our timeout fires after gcloud printed "Created" but before it exited,
   // we get exitCode -1 with the success message in stderr — treat as success.
-  const createdInStderr = r.stderr?.includes('Created [');
-  if (r.exitCode !== 0 && !createdInStderr) {
-    console.error(`[gcp] Failed to create VM ${vmName}: ${r.stderr}`);
+  const createdInOutput = r.stderr?.includes('Created [') || r.stdout?.includes('Created [');
+  if (r.exitCode !== 0 && !createdInOutput) {
+    const detail = r.stderr?.trim() || r.stdout?.trim() || `(no output, exit code ${r.exitCode})`;
+    console.error(`[gcp] Failed to create VM ${vmName} (exit ${r.exitCode}): ${detail}`);
     return false;
   }
-  if (r.exitCode !== 0 && createdInStderr) {
+  if (r.exitCode !== 0 && createdInOutput) {
     console.warn(`[gcp] VM ${vmName} created (gcloud timed out waiting for readiness — this is OK)`);
   } else {
     console.log(`[gcp] Created VM: ${vmName}`);
