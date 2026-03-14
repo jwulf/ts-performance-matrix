@@ -372,6 +372,13 @@ async function runGcp(): Promise<void> {
   console.log(`GCP Run ID: ${runId}`);
   console.log(`Project: ${gcpOpts.project}, Zone: ${gcpOpts.zone}, Bucket: ${gcpOpts.bucket}`);
 
+  // Clear stale results from previous runs
+  const gcpResultsDir = resultsDir(mode);
+  if (fs.existsSync(gcpResultsDir)) {
+    fs.rmSync(gcpResultsDir, { recursive: true });
+    console.log(`Cleared previous results from ${gcpResultsDir}`);
+  }
+
   if (lanes > 1 && argv.local) {
     console.warn('Warning: --lanes > 1 is only supported in GCP mode. Ignoring for local mode.');
   }

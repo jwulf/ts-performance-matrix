@@ -191,6 +191,15 @@ public class Worker {
         var workerErrors = new AtomicIntegerArray(NUM_WORKERS);
         var done = new AtomicBoolean(false);
 
+        // Shared HTTP client for sim server calls (re-creating per job exhausts file descriptors)
+        final HttpClient simClient = ("http".equals(HANDLER_TYPE) && httpSimPort > 0)
+                ? HttpClient.newHttpClient() : null;
+        final HttpRequest simReq = (simClient != null)
+                ? HttpRequest.newBuilder()
+                        .uri(URI.create("http://127.0.0.1:" + httpSimPort + "/work"))
+                        .GET().build()
+                : null;
+
         long t0 = System.nanoTime();
         long deadline = t0 + (long) SCENARIO_TIMEOUT_S * 1_000_000_000L;
 
@@ -200,12 +209,8 @@ public class Worker {
                     try {
                         if ("cpu".equals(HANDLER_TYPE) && HANDLER_LATENCY_MS > 0) {
                             cpuWork(HANDLER_LATENCY_MS);
-                        } else if ("http".equals(HANDLER_TYPE) && httpSimPort > 0) {
+                        } else if (simClient != null && simReq != null) {
                             try {
-                                var simClient = HttpClient.newHttpClient();
-                                var simReq = HttpRequest.newBuilder()
-                                        .uri(URI.create("http://127.0.0.1:" + httpSimPort + "/work"))
-                                        .GET().build();
                                 simClient.send(simReq, HttpResponse.BodyHandlers.discarding());
                             } catch (Exception ignored) {}
                         }

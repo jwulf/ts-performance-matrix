@@ -622,6 +622,19 @@ ${uploadResult}
 
 // ─── VM lifecycle ────────────────────────────────────────
 
+/** Check whether a VM exists (regardless of its status). */
+async function vmExists(opts: GcpOptions, vmName: string): Promise<boolean> {
+  // Wait a few seconds for eventual consistency — the VM may still be provisioning
+  await new Promise((r) => setTimeout(r, 5_000));
+  const r = await gcloudAsync([
+    'compute', 'instances', 'describe', vmName,
+    '--project', opts.project,
+    '--zone', opts.zone,
+    '--format=value(status)',
+  ], 30_000);
+  return r.exitCode === 0;
+}
+
 async function createVm(
   opts: GcpOptions,
   vmName: string,
@@ -657,11 +670,17 @@ async function createVm(
   // we get exitCode -1 with the success message in stderr — treat as success.
   const createdInOutput = r.stderr?.includes('Created [') || r.stdout?.includes('Created [');
   if (r.exitCode !== 0 && !createdInOutput) {
-    const detail = r.stderr?.trim() || r.stdout?.trim() || `(no output, exit code ${r.exitCode})`;
-    console.error(`[gcp] Failed to create VM ${vmName} (exit ${r.exitCode}): ${detail}`);
-    return false;
-  }
-  if (r.exitCode !== 0 && createdInOutput) {
+    // Timeout may have killed gcloud before it printed "Created [", but the GCP API call
+    // could already have been submitted. Poll to check if the VM actually exists.
+    console.warn(`[gcp] createVm ${vmName} exited ${r.exitCode} with no "Created" confirmation — checking if VM exists...`);
+    const exists = await vmExists(opts, vmName);
+    if (!exists) {
+      const detail = r.stderr?.trim() || r.stdout?.trim() || `(no output, exit code ${r.exitCode})`;
+      console.error(`[gcp] VM ${vmName} does not exist after create attempt: ${detail}`);
+      return false;
+    }
+    console.warn(`[gcp] VM ${vmName} exists despite gcloud timeout — treating as success`);
+  } else if (r.exitCode !== 0 && createdInOutput) {
     console.warn(`[gcp] VM ${vmName} created (gcloud timed out waiting for readiness — this is OK)`);
   } else {
     console.log(`[gcp] Created VM: ${vmName}`);
@@ -959,7 +978,8 @@ export async function runScenarioGcp(
     const vmOk = await createVm(opts, vmName, GCP_DEFAULTS.workerMachineType, script, ['perf-worker']);
     if (!vmOk) {
       console.error(`  [${scenario.id}] Worker VM creation failed — aborting scenario`);
-      if (workerVmNames.length > 0) await deleteVms(opts, workerVmNames);
+      // Include the failing VM name: createVm may have timed out after the VM was actually created
+      await deleteVms(opts, [...workerVmNames, vmName]);
       return errorResult(scenario, `Worker VM creation failed: ${vmName}`);
     }
     workerVmNames.push(vmName);
