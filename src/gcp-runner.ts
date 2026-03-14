@@ -644,11 +644,19 @@ async function createVm(
   if (tags?.length) args.push('--tags', tags.join(','));
 
   const r = await gcloudAsync(args, 180_000);
-  if (r.exitCode !== 0) {
+  // gcloud writes informational "Created [url]" to stderr, not stdout.
+  // If our timeout fires after gcloud printed "Created" but before it exited,
+  // we get exitCode -1 with the success message in stderr — treat as success.
+  const createdInStderr = r.stderr?.includes('Created [');
+  if (r.exitCode !== 0 && !createdInStderr) {
     console.error(`[gcp] Failed to create VM ${vmName}: ${r.stderr}`);
     return false;
   }
-  console.log(`[gcp] Created VM: ${vmName}`);
+  if (r.exitCode !== 0 && createdInStderr) {
+    console.warn(`[gcp] VM ${vmName} created (gcloud timed out waiting for readiness — this is OK)`);
+  } else {
+    console.log(`[gcp] Created VM: ${vmName}`);
+  }
   trackVm(opts, vmName);
   return true;
 }
@@ -692,7 +700,14 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
         GCP_DEFAULTS.brokerImageFamily, GCP_DEFAULTS.brokerImageProject),
     );
   }
-  await Promise.all(createPromises);
+  const createResults = await Promise.all(createPromises);
+  if (createResults.some((ok) => !ok)) {
+    const failed = vmNames.filter((_, i) => !createResults[i]);
+    console.error(`[gcp]${opts.laneTag ?? ''} Broker VM creation failed for: ${failed.join(', ')}`);
+    const created = vmNames.filter((_, i) => createResults[i]);
+    if (created.length > 0) deleteVms(opts, created);
+    return null;
+  }
 
   // Collect IPs for all nodes (in parallel)
   const internalIps = await Promise.all(vmNames.map((vm) => getVmInternalIp(opts, vm)));
@@ -706,14 +721,20 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
     console.log(`[gcp]${opts.laneTag ?? ''} Waiting for Docker pull to complete on all ${clusterSize} nodes before starting cluster...`);
     // Wait for Docker to be ready on all nodes (pull can take a while)
     const pullDeadline = Date.now() + 600_000; // 10 min for pull
+    let pullComplete = false;
     while (Date.now() < pullDeadline) {
       const checks = await Promise.all(
         vmNames.map((vm) =>
           gcloudAsync(sshArgs(opts, vm, 'docker image inspect camunda/camunda:' + (process.env.CAMUNDA_VERSION || '8.9-SNAPSHOT') + ' >/dev/null 2>&1'), 30_000),
         ),
       );
-      if (checks.every((r) => r.exitCode === 0)) break;
+      if (checks.every((r) => r.exitCode === 0)) { pullComplete = true; break; }
       await new Promise((r) => setTimeout(r, 10_000));
+    }
+    if (!pullComplete) {
+      console.error(`[gcp]${opts.laneTag ?? ''} Docker image pull timed out after 10 min — aborting cluster start`);
+      deleteVms(opts, vmNames);
+      return null;
     }
 
     // Start containers with contact points
@@ -921,7 +942,12 @@ export async function runScenarioGcp(
       isLeader: p === 0,
     });
 
-    await createVm(opts, vmName, GCP_DEFAULTS.workerMachineType, script, ['perf-worker']);
+    const vmOk = await createVm(opts, vmName, GCP_DEFAULTS.workerMachineType, script, ['perf-worker']);
+    if (!vmOk) {
+      console.error(`  [${scenario.id}] Worker VM creation failed — aborting scenario`);
+      if (workerVmNames.length > 0) deleteVms(opts, workerVmNames);
+      return errorResult(scenario, `Worker VM creation failed: ${vmName}`);
+    }
     workerVmNames.push(vmName);
   }
 
