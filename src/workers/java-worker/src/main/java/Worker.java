@@ -16,11 +16,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -72,11 +68,6 @@ public class Worker {
             System.out.printf("[java-worker] target=%d/worker broker=%s%n",
                     TARGET_PER_WORKER, BROKER_REST_URL);
 
-            int httpSimPort = 0;
-            if ("http".equals(HANDLER_TYPE) && HANDLER_LATENCY_MS > 0) {
-                httpSimPort = startHttpSimServer(HANDLER_LATENCY_MS);
-            }
-
             // Signal ready (barrier protocol)
             writeReady();
             waitForGo();
@@ -88,17 +79,17 @@ public class Worker {
             double wallClockS;
 
             if ("grpc-streaming".equals(SDK_MODE)) {
-                var result = runGrpcStreaming(httpSimPort);
+                var result = runGrpcStreaming();
                 workerCompleted = result.completed;
                 workerErrors = result.errors;
                 wallClockS = result.wallClockS;
             } else if ("grpc-polling".equals(SDK_MODE)) {
-                var result = runGrpcPolling(httpSimPort);
+                var result = runGrpcPolling();
                 workerCompleted = result.completed;
                 workerErrors = result.errors;
                 wallClockS = result.wallClockS;
             } else {
-                var result = runRest(httpSimPort);
+                var result = runRest();
                 workerCompleted = result.completed;
                 workerErrors = result.errors;
                 wallClockS = result.wallClockS;
@@ -141,13 +132,13 @@ public class Worker {
 
     record RestResult(int[] completed, int[] errors, double wallClockS) {}
 
-    static RestResult runRest(int httpSimPort) throws Exception {
+    static RestResult runRest() throws Exception {
         var client = CamundaClient.newClientBuilder()
                 .restAddress(URI.create(BROKER_REST_URL))
                 .preferRestOverGrpc(true)
                 .build();
         try {
-            return runWorker(client, httpSimPort, false);
+            return runWorker(client, false);
         } finally {
             client.close();
         }
@@ -155,14 +146,14 @@ public class Worker {
 
     // ─── gRPC streaming mode ─────────────────────────────────
 
-    static RestResult runGrpcStreaming(int httpSimPort) throws Exception {
+    static RestResult runGrpcStreaming() throws Exception {
         String grpcUri = BROKER_GRPC_URL.startsWith("http") ? BROKER_GRPC_URL : "http://" + BROKER_GRPC_URL;
         var client = CamundaClient.newClientBuilder()
                 .grpcAddress(URI.create(grpcUri))
                 .preferRestOverGrpc(false)
                 .build();
         try {
-            return runWorker(client, httpSimPort, true);
+            return runWorker(client, true);
         } finally {
             client.close();
         }
@@ -170,14 +161,14 @@ public class Worker {
 
     // ─── gRPC polling mode ───────────────────────────────────
 
-    static RestResult runGrpcPolling(int httpSimPort) throws Exception {
+    static RestResult runGrpcPolling() throws Exception {
         String grpcUri = BROKER_GRPC_URL.startsWith("http") ? BROKER_GRPC_URL : "http://" + BROKER_GRPC_URL;
         var client = CamundaClient.newClientBuilder()
                 .grpcAddress(URI.create(grpcUri))
                 .preferRestOverGrpc(false)
                 .build();
         try {
-            return runWorker(client, httpSimPort, false);
+            return runWorker(client, false);
         } finally {
             client.close();
         }
@@ -185,27 +176,13 @@ public class Worker {
 
     // ─── Common worker logic ─────────────────────────────────
 
-    static RestResult runWorker(CamundaClient client, int httpSimPort, boolean streamEnabled) throws Exception {
+    static RestResult runWorker(CamundaClient client, boolean streamEnabled) throws Exception {
         int totalTarget = NUM_WORKERS * TARGET_PER_WORKER;
         var workerCompleted = new AtomicIntegerArray(NUM_WORKERS);
         var workerErrors = new AtomicIntegerArray(NUM_WORKERS);
         var done = new AtomicBoolean(false);
-
-        // Shared HTTP client for sim server calls (re-creating per job exhausts file descriptors)
-        // Force HTTP/1.1: default HttpClient prefers HTTP/2 and attempts h2c upgrade against
-        // com.sun.net.httpserver which only speaks HTTP/1.1, causing hangs.
-        final HttpClient simClient = ("http".equals(HANDLER_TYPE) && httpSimPort > 0)
-                ? HttpClient.newBuilder()
-                        .version(HttpClient.Version.HTTP_1_1)
-                        .connectTimeout(Duration.ofSeconds(5))
-                        .build()
-                : null;
-        final HttpRequest simReq = (simClient != null)
-                ? HttpRequest.newBuilder()
-                        .uri(URI.create("http://127.0.0.1:" + httpSimPort + "/work"))
-                        .timeout(Duration.ofSeconds(5))
-                        .GET().build()
-                : null;
+        // Track handler invocations for diagnostics
+        var handlerInvocations = new AtomicInteger(0);
 
         long t0 = System.nanoTime();
         long deadline = t0 + (long) SCENARIO_TIMEOUT_S * 1_000_000_000L;
@@ -213,25 +190,29 @@ public class Worker {
         var worker = client.newWorker()
                 .jobType("test-job")
                 .handler((jobClient, job) -> {
-                    try {
-                        if ("cpu".equals(HANDLER_TYPE) && HANDLER_LATENCY_MS > 0) {
-                            cpuWork(HANDLER_LATENCY_MS);
-                        } else if ("http".equals(HANDLER_TYPE) && HANDLER_LATENCY_MS > 0) {
-                            // Use Thread.sleep to simulate HTTP latency instead of actual HTTP call.
-                            // The HttpClient/HttpServer approach hangs on GCP Debian VMs for unknown reasons.
-                            Thread.sleep(HANDLER_LATENCY_MS);
-                        }
+                    handlerInvocations.incrementAndGet();
 
-                        jobClient.newCompleteCommand(job).variables("{\"done\":true}").send().join();
-
-                        int minIdx = minIndex(workerCompleted);
-                        workerCompleted.incrementAndGet(minIdx);
-                        int total = sumArray(workerCompleted);
-                        if (total >= totalTarget) done.set(true);
-                    } catch (Exception e) {
-                        int minIdx = minIndex(workerErrors);
-                        workerErrors.incrementAndGet(minIdx);
+                    if ("cpu".equals(HANDLER_TYPE) && HANDLER_LATENCY_MS > 0) {
+                        cpuWork(HANDLER_LATENCY_MS);
+                    } else if ("http".equals(HANDLER_TYPE) && HANDLER_LATENCY_MS > 0) {
+                        Thread.sleep(HANDLER_LATENCY_MS);
                     }
+
+                    // Complete the job asynchronously — never block the handler thread.
+                    // Blocking with .join() causes deadlock when many handlers pile up
+                    // (carrier-thread pinning in the SDK's internal HTTP client).
+                    jobClient.newCompleteCommand(job).variables("{\"done\":true}").send()
+                        .whenComplete((result, error) -> {
+                            if (error == null) {
+                                int minIdx = minIndex(workerCompleted);
+                                workerCompleted.incrementAndGet(minIdx);
+                                int total = sumArray(workerCompleted);
+                                if (total >= totalTarget) done.set(true);
+                            } else {
+                                int minIdx = minIndex(workerErrors);
+                                workerErrors.incrementAndGet(minIdx);
+                            }
+                        });
                 })
                 .maxJobsActive(ACTIVATE_BATCH * NUM_WORKERS)
                 .streamEnabled(streamEnabled)
@@ -243,7 +224,18 @@ public class Worker {
             Thread.sleep(50);
         }
 
-        worker.close();
+        // Close with a hard timeout — worker.close() can hang if handlers are stuck
+        System.out.printf("[java-worker] Main loop ended: invocations=%d completed=%d errors=%d%n",
+                handlerInvocations.get(), sumArray(workerCompleted), sumArray(workerErrors));
+        var closeThread = new Thread(() -> {
+            try { worker.close(); } catch (Exception ignored) {}
+        }, "worker-close");
+        closeThread.start();
+        closeThread.join(30_000); // Wait at most 30s for graceful close
+        if (closeThread.isAlive()) {
+            System.out.println("[java-worker] worker.close() timed out after 30s — proceeding with results");
+            closeThread.interrupt();
+        }
 
         double wallClockS = (System.nanoTime() - t0) / 1e9;
         int[] completed = new int[NUM_WORKERS];
@@ -264,27 +256,6 @@ public class Worker {
         while (System.nanoTime() < end) {
             x += Math.sin(x + 1);
         }
-    }
-
-    // ─── HTTP sim server ─────────────────────────────────────
-
-    static int startHttpSimServer(int latencyMs) throws IOException {
-        var server = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/", exchange -> {
-            try { Thread.sleep(latencyMs); } catch (InterruptedException ignored) {}
-            byte[] resp = "{\"ok\":true}".getBytes();
-            exchange.sendResponseHeaders(200, resp.length);
-            try (var os = exchange.getResponseBody()) {
-                os.write(resp);
-            }
-        });
-        // Use a cached platform-thread pool instead of virtual threads.
-        // com.sun.net.httpserver.HttpServer internals use synchronized blocks,
-        // which causes virtual-thread carrier pinning when the handler sleeps —
-        // deadlocking the server on small VMs (few carrier threads).
-        server.setExecutor(Executors.newCachedThreadPool());
-        server.start();
-        return server.getAddress().getPort();
     }
 
     // ─── Barrier protocol ────────────────────────────────────
