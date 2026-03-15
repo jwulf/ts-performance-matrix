@@ -143,20 +143,12 @@ async function runRestBalanced(httpSimPort: number): Promise<{ metrics: WorkerMe
       const minWorker = workerMetrics.reduce((a, b) =>
         a.completed < b.completed ? a : b
       );
+      minWorker.completed++;
 
-      try {
-        const receipt = await job.complete({ variables: { done: true } });
-        minWorker.completed++;
+      const totalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
+      if (totalCompleted >= totalTarget) done = true;
 
-        // Check if all workers have reached target
-        const totalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
-        if (totalCompleted >= totalTarget) done = true;
-
-        return receipt;
-      } catch {
-        minWorker.errors++;
-        return job.fail({ errorMessage: 'handler failure' });
-      }
+      return job.complete({ variables: { done: true } });
     },
   });
 
