@@ -19,7 +19,7 @@ using Camunda.Orchestration.Sdk.Runtime;
 var PROCESS_ID = Env("WORKER_PROCESS_ID", "process-0");
 var SDK_MODE = Env("SDK_MODE", "rest");
 var HANDLER_TYPE = Env("HANDLER_TYPE", "cpu");
-var HANDLER_LATENCY_MS = EnvInt("HANDLER_LATENCY_MS", HANDLER_TYPE == "http" ? 200 : 0);
+var HANDLER_LATENCY_MS = EnvInt("HANDLER_LATENCY_MS", 200);
 var NUM_WORKERS = EnvInt("NUM_WORKERS", 1);
 var TARGET_PER_WORKER = EnvInt("TARGET_PER_WORKER", 10000);
 var ACTIVATE_BATCH = EnvInt("ACTIVATE_BATCH", 32);

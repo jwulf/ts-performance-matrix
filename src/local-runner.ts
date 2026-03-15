@@ -18,6 +18,7 @@ import type { ScenarioResult, ProcessResult } from './types.js';
 import { jainFairness } from './types.js';
 import {
   DEFAULT_TARGET_PER_WORKER,
+  DEFAULT_HANDLER_LATENCY_MS,
   DEFAULT_ACTIVATE_BATCH,
   DEFAULT_SCENARIO_TIMEOUT_S,
   DEFAULT_PAYLOAD_SIZE_KB,
@@ -323,7 +324,7 @@ export async function runScenarioLocal(
       WORKER_PROCESS_ID: processId,
       SDK_MODE: sdkMode,
       HANDLER_TYPE: handlerType,
-      HANDLER_LATENCY_MS: String(handlerType === 'http' ? 200 : 0),
+      HANDLER_LATENCY_MS: String(DEFAULT_HANDLER_LATENCY_MS),
       NUM_WORKERS: String(WPP),
       TARGET_PER_WORKER: String(opts.targetPerWorker),
       ACTIVATE_BATCH: String(DEFAULT_ACTIVATE_BATCH),

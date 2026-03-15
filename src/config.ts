@@ -7,7 +7,7 @@
 
 // ─── Matrix Dimensions ──────────────────────────────────
 
-export const TOTAL_WORKERS = [10, 20, 50] as const;
+export const TOTAL_WORKERS = [10, 20, 50, 100] as const;
 export const WORKERS_PER_PROCESS = [1, 2, 5, 10, 25, 50] as const;
 export const SDK_MODES = ['rest', 'grpc-streaming', 'grpc-polling'] as const;
 export const SDK_LANGUAGES = ['ts', 'python', 'csharp', 'java'] as const;
@@ -47,7 +47,7 @@ export interface ScenarioConfig {
 // ─── Defaults ────────────────────────────────────────────
 
 export const DEFAULT_TARGET_PER_WORKER = 10_000;
-export const DEFAULT_HANDLER_LATENCY_MS = 200; // for http handler
+export const DEFAULT_HANDLER_LATENCY_MS = 200; // for all handler types
 export const DEFAULT_ACTIVATE_BATCH = 32;
 export const DEFAULT_SCENARIO_TIMEOUT_S = 300;
 export const DEFAULT_PAYLOAD_SIZE_KB = 10;

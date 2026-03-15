@@ -57,10 +57,10 @@ throughput = f(total_workers, workers_per_process, sdk_mode, handler_type, clust
 
 | Dimension | Values | Rationale |
 |-----------|--------|-----------|
-| **Total workers (W)** | 10, 20, 50 | Small team → medium deployment → large deployment |
+| **Total workers (W)** | 10, 20, 50, 100 | Small team → medium → large deployment → backpressure stress test |
 | **Workers per process (WPP)** | 1, 2, 5, 10, 25, 50 | Granular sweep from full isolation to full sharing |
 | **SDK mode** | `rest-balanced`, `grpc-poll` | Two competitive modes from prior data |
-| **Handler type** | `cpu`, `http` | Synchronous vs async workload |
+| **Handler type** | `cpu`, `http` | CPU-bound (200ms busy-loop) vs I/O-bound (200ms async wait) |
 | **Cluster** | `1broker`, `3broker` | Single vs distributed broker |
 
 Not every (W, WPP) combination is valid — WPP must divide W evenly, and WPP ≤ W.
@@ -298,12 +298,61 @@ npx tsx src/run-matrix.ts --local --total-workers 10 --wpp 2 5
 npx tsx src/run-matrix.ts --project my-gcp-project --zone us-central1-a
 ```
 
-## Output Format
+## Worker Configuration
 
-Each scenario produces a result record:
+All SDK workers are configured identically to ensure a fair comparison. The key parameters
+that affect throughput are handler latency, job activation batch size, and execution thread
+pool sizing.
 
-```typescript
-interface ScenarioResult {
+### Handler Latency
+
+Every scenario runs with a **200ms simulated workload**, regardless of handler type:
+
+| Handler Type | Simulation Method | Duration |
+|---|---|---|
+| `cpu` | Busy-loop (`Math.sin` / equivalent) burns CPU for the configured duration | 200ms |
+| `http` | `Thread.sleep` / `setTimeout` / equivalent simulates async I/O wait | 200ms |
+
+The latency is passed to workers via the `HANDLER_LATENCY_MS` environment variable (always `200`).
+The constant `DEFAULT_HANDLER_LATENCY_MS` in `src/config.ts` is the single source of truth.
+
+The difference between the two handler types is *how* the 200ms is spent:
+- **CPU handlers** keep the execution thread busy (CPU-bound).
+- **HTTP handlers** release the execution thread during the wait (I/O-bound), allowing the
+  runtime to schedule other work on that thread.
+
+### Job Activation & Execution Threads
+
+Each worker process opens a single `JobWorker` that polls/streams jobs from the broker. The
+key parameters controlling concurrency are:
+
+| Parameter | Value | Description |
+|---|---|---|
+| `maxJobsActive` | `ACTIVATE_BATCH × NUM_WORKERS` (default: 32 × W/P) | Max jobs buffered locally before pausing activation |
+| `pollInterval` | 100ms | How often the worker polls for new jobs (REST/gRPC-polling modes) |
+| `timeout` | 30s | Job lock timeout — how long a job is reserved before the broker reclaims it |
+| `streamEnabled` | `true` for gRPC-streaming, `false` otherwise | Whether to use the gRPC job push stream |
+
+**Execution thread pool** — the number of threads that can run job handlers in parallel:
+
+| Language | Configuration | Notes |
+|---|---|---|
+| TypeScript | Single-threaded (Node.js event loop) | Async I/O naturally multiplexes; CPU handlers block the event loop |
+| Python | `NUM_WORKERS` threads via `ThreadPoolExecutor` | GIL limits true CPU parallelism but allows I/O concurrency |
+| C# | `Task`-based async — thread pool sized by .NET runtime | Naturally concurrent for async handlers |
+| Java | `.numJobWorkerExecutionThreads(NUM_WORKERS)` | Explicitly set to match the desired worker count. Defaults to 1 if not set, which serializes all handler execution |
+
+The Java thread pool setting is critical: without it, a single execution thread processes
+handlers sequentially. With 200ms handler latency this limits throughput to ~5 jobs/s regardless
+of `NUM_WORKERS`. Setting it to `NUM_WORKERS` allows up to N handlers to execute in parallel.
+
+### Job Completion
+
+All workers complete jobs asynchronously (fire-and-forget with error callback) to avoid blocking
+handler threads. The Java worker uses `.send().whenComplete(...)` rather than `.send().join()`.
+Blocking completion was found to cause carrier-thread pinning and deadlock at high concurrency.
+
+
   // Configuration
   totalWorkers: number;
   workersPerProcess: number;

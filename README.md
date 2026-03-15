@@ -9,10 +9,10 @@ Tests every valid combination of (TotalWorkers, WorkersPerProcess) across SDK la
 | Dimension | Values |
 |-----------|--------|
 | SDK language | `ts`, `python`, `csharp`, `java` |
-| Total workers (W) | 10, 20, 50 |
+| Total workers (W) | 10, 20, 50, 100 |
 | Workers per process (WPP) | 1, 2, 5, 10, 25, 50 |
 | SDK mode | `rest`, `grpc` |
-| Handler type | `cpu` (sync), `http` (200ms async) |
+| Handler type | `cpu` (200ms busy-loop), `http` (200ms async wait) |
 | Cluster | 1 broker, 3 brokers |
 
 Not all languages support all modes:
@@ -24,7 +24,7 @@ Not all languages support all modes:
 | C# | `rest` |
 | Java | `rest`, `grpc-streaming`, `grpc-polling` |
 
-Only valid combinations where W is divisible by WPP are generated (14 topologies × 7 language-mode combos × 2 handlers × 2 clusters). Full matrix: **~392 scenarios**.
+Only valid combinations where W is divisible by WPP are generated (20 topologies × 7 language-mode combos × 2 handlers × 2 clusters). Full matrix: **~560 scenarios**.
 
 ## Prerequisites
 

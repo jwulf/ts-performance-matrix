@@ -30,7 +30,7 @@ import * as http from 'node:http';
 const PROCESS_ID = process.env.WORKER_PROCESS_ID || 'process-0';
 const SDK_MODE = (process.env.SDK_MODE || 'rest') as 'rest' | 'grpc-streaming' | 'grpc-polling';
 const HANDLER_TYPE = (process.env.HANDLER_TYPE || 'cpu') as 'cpu' | 'http';
-const HANDLER_LATENCY_MS = parseInt(process.env.HANDLER_LATENCY_MS || (HANDLER_TYPE === 'http' ? '200' : '0'), 10);
+const HANDLER_LATENCY_MS = parseInt(process.env.HANDLER_LATENCY_MS || '200', 10);
 const NUM_WORKERS = parseInt(process.env.NUM_WORKERS || '1', 10);
 const TARGET_PER_WORKER = parseInt(process.env.TARGET_PER_WORKER || '10000', 10);
 const ACTIVATE_BATCH = parseInt(process.env.ACTIVATE_BATCH || '32', 10);

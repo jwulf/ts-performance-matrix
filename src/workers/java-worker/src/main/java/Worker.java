@@ -33,8 +33,7 @@ public class Worker {
     static final String PROCESS_ID = env("WORKER_PROCESS_ID", "process-0");
     static final String SDK_MODE = env("SDK_MODE", "rest");
     static final String HANDLER_TYPE = env("HANDLER_TYPE", "cpu");
-    static final int HANDLER_LATENCY_MS = envInt("HANDLER_LATENCY_MS",
-            "http".equals(env("HANDLER_TYPE", "cpu")) ? 200 : 0);
+    static final int HANDLER_LATENCY_MS = envInt("HANDLER_LATENCY_MS", 200);
     static final int NUM_WORKERS = envInt("NUM_WORKERS", 1);
     static final int TARGET_PER_WORKER = envInt("TARGET_PER_WORKER", 10000);
     static final int ACTIVATE_BATCH = envInt("ACTIVATE_BATCH", 32);
@@ -136,6 +135,7 @@ public class Worker {
         var client = CamundaClient.newClientBuilder()
                 .restAddress(URI.create(BROKER_REST_URL))
                 .preferRestOverGrpc(true)
+                .numJobWorkerExecutionThreads(NUM_WORKERS)
                 .build();
         try {
             return runWorker(client, false);
@@ -151,6 +151,7 @@ public class Worker {
         var client = CamundaClient.newClientBuilder()
                 .grpcAddress(URI.create(grpcUri))
                 .preferRestOverGrpc(false)
+                .numJobWorkerExecutionThreads(NUM_WORKERS)
                 .build();
         try {
             return runWorker(client, true);
@@ -166,6 +167,7 @@ public class Worker {
         var client = CamundaClient.newClientBuilder()
                 .grpcAddress(URI.create(grpcUri))
                 .preferRestOverGrpc(false)
+                .numJobWorkerExecutionThreads(NUM_WORKERS)
                 .build();
         try {
             return runWorker(client, false);
