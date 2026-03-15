@@ -177,17 +177,20 @@ if (argv['dry-run']) {
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
 const RESULTS_DIR = path.join(REPO_ROOT, 'results');
 
-function resultsDir(mode: string): string {
-  return path.join(RESULTS_DIR, mode);
+// Each run gets its own directory: results/<mode>/<runId>/
+let currentRunDir = '';
+
+function resultsDir(mode: string, runId: string): string {
+  return path.join(RESULTS_DIR, mode, runId);
 }
 
-function resultExists(scenarioId: string, mode: string): boolean {
-  const filePath = path.join(resultsDir(mode), `${scenarioId}.json`);
+function resultExists(scenarioId: string, mode: string, runId: string): boolean {
+  const filePath = path.join(resultsDir(mode, runId), `${scenarioId}.json`);
   return fs.existsSync(filePath);
 }
 
-function saveResult(result: ScenarioResult, mode: string): void {
-  const dir = resultsDir(mode);
+function saveResult(result: ScenarioResult, mode: string, runId: string): void {
+  const dir = resultsDir(mode, runId);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(
     path.join(dir, `${result.scenarioId}.json`),
@@ -195,10 +198,62 @@ function saveResult(result: ScenarioResult, mode: string): void {
   );
 }
 
+interface RunMetadata {
+  runId: string;
+  mode: string;
+  startedAt: string;
+  completedAt: string | null;
+  status: 'running' | 'completed' | 'interrupted';
+  commit: string;
+  scenarioCount: number;
+  scenariosCompleted: number;
+  lanes: number;
+  cliArgs: Record<string, string | boolean | undefined>;
+  gcpProject?: string;
+  gcpZone?: string;
+  gcpBucket?: string;
+}
+
+function getGitCommit(): string {
+  try {
+    const { execSync } = require('child_process');
+    return execSync('git rev-parse --short HEAD', { encoding: 'utf8', cwd: REPO_ROOT }).trim();
+  } catch {
+    return 'unknown';
+  }
+}
+
+function writeMetadata(metadata: RunMetadata): void {
+  fs.mkdirSync(currentRunDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(currentRunDir, 'metadata.json'),
+    JSON.stringify(metadata, null, 2),
+  );
+}
+
+let currentMetadata: RunMetadata | null = null;
+
+function markRunInterrupted(): void {
+  if (currentMetadata && currentRunDir) {
+    currentMetadata.status = 'interrupted';
+    currentMetadata.completedAt = new Date().toISOString();
+    try { writeMetadata(currentMetadata); } catch { /* best-effort */ }
+  }
+}
+
+function markRunCompleted(scenariosCompleted: number): void {
+  if (currentMetadata && currentRunDir) {
+    currentMetadata.status = 'completed';
+    currentMetadata.completedAt = new Date().toISOString();
+    currentMetadata.scenariosCompleted = scenariosCompleted;
+    writeMetadata(currentMetadata);
+  }
+}
+
 // ─── Report generation ───────────────────────────────────
 
-function generateReport(results: ScenarioResult[], mode: string): void {
-  const reportDir = path.join(RESULTS_DIR, mode);
+function generateReport(results: ScenarioResult[], mode: string, runId: string): void {
+  const reportDir = resultsDir(mode, runId);
   fs.mkdirSync(reportDir, { recursive: true });
 
   // Summary JSON
@@ -299,8 +354,30 @@ async function runLocal(): Promise<void> {
   }
 
   const mode = 'local';
+  const runId = `run-${Date.now()}`;
+  currentRunDir = resultsDir(mode, runId);
   const results: ScenarioResult[] = [];
   let completed = 0;
+
+  currentMetadata = {
+    runId,
+    mode,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    status: 'running',
+    commit: getGitCommit(),
+    scenarioCount: scenarios.length,
+    scenariosCompleted: 0,
+    lanes: 1,
+    cliArgs: {
+      local: true,
+      resume: argv.resume as boolean | undefined,
+      languages: str(argv.languages),
+      scenarios: str(argv.scenarios),
+    },
+  };
+  writeMetadata(currentMetadata);
+  console.log(`Local Run ID: ${runId}`);
 
   // Group by cluster to minimize restarts
   const byCluster = new Map<string, typeof scenarios>();
@@ -317,11 +394,11 @@ async function runLocal(): Promise<void> {
       completed++;
       const progress = `[${completed}/${scenarios.length}]`;
 
-      if (argv.resume && resultExists(scenario.id, mode)) {
+      if (argv.resume && resultExists(scenario.id, mode, runId)) {
         console.log(`${progress} SKIP (exists): ${scenario.id}`);
         // Load existing result
         const existing = JSON.parse(
-          fs.readFileSync(path.join(resultsDir(mode), `${scenario.id}.json`), 'utf-8'),
+          fs.readFileSync(path.join(resultsDir(mode, runId), `${scenario.id}.json`), 'utf-8'),
         ) as ScenarioResult;
         results.push(existing);
         continue;
@@ -337,29 +414,34 @@ async function runLocal(): Promise<void> {
 
       needsRestart = true; // restart between scenarios for clean state
       results.push(result);
-      saveResult(result, mode);
+      saveResult(result, mode, runId);
+      currentMetadata!.scenariosCompleted = results.length;
     }
   }
 
-  generateReport(results, mode);
+  generateReport(results, mode, runId);
+  markRunCompleted(results.length);
 }
 
 async function runGcp(): Promise<void> {
   const { runScenarioGcp, provisionBrokerPool, teardownBrokerPool, resetBrokerPool, cleanupAllVms } = await import('./gcp-runner.js');
+
+  const runId = `run-${Date.now()}`;
+  const mode = 'gcp';
+  currentRunDir = resultsDir(mode, runId);
 
   // Register signal handlers early — catch both SIGINT (Ctrl-C) and SIGTERM
   // (sent by npm/parent process on shutdown). Must be registered before any VMs
   // are created so cleanup always fires.
   const signalCleanup = (signal: string) => {
     console.log(`\n\n${signal} received — cleaning up all GCP VMs...`);
+    markRunInterrupted();
     cleanupAllVms();
     process.exit(signal === 'SIGINT' ? 130 : 143);
   };
   process.on('SIGINT', () => signalCleanup('SIGINT'));
   process.on('SIGTERM', () => signalCleanup('SIGTERM'));
 
-  const runId = `run-${Date.now()}`;
-  const mode = 'gcp';
   const gcpOpts = {
     project: String(argv.project),
     zone: str(argv.zone) || 'us-central1-a',
@@ -369,15 +451,31 @@ async function runGcp(): Promise<void> {
     ...(argv.subnetwork ? { subnetwork: String(argv.subnetwork) } : {}),
   };
 
-  console.log(`GCP Run ID: ${runId}`);
-  console.log(`Project: ${gcpOpts.project}, Zone: ${gcpOpts.zone}, Bucket: ${gcpOpts.bucket}`);
+  currentMetadata = {
+    runId,
+    mode,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    status: 'running',
+    commit: getGitCommit(),
+    scenarioCount: scenarios.length,
+    scenariosCompleted: 0,
+    lanes,
+    cliArgs: {
+      resume: argv.resume as boolean | undefined,
+      languages: str(argv.languages),
+      scenarios: str(argv.scenarios),
+      lanes: String(lanes),
+    },
+    gcpProject: gcpOpts.project,
+    gcpZone: gcpOpts.zone,
+    gcpBucket: gcpOpts.bucket,
+  };
+  writeMetadata(currentMetadata);
 
-  // Clear stale results from previous runs
-  const gcpResultsDir = resultsDir(mode);
-  if (fs.existsSync(gcpResultsDir)) {
-    fs.rmSync(gcpResultsDir, { recursive: true });
-    console.log(`Cleared previous results from ${gcpResultsDir}`);
-  }
+  console.log(`GCP Run ID: ${runId}`);
+  console.log(`Results: ${currentRunDir}`);
+  console.log(`Project: ${gcpOpts.project}, Zone: ${gcpOpts.zone}, Bucket: ${gcpOpts.bucket}`);
 
   if (lanes > 1 && argv.local) {
     console.warn('Warning: --lanes > 1 is only supported in GCP mode. Ignoring for local mode.');
@@ -482,10 +580,10 @@ async function runGcp(): Promise<void> {
         globalCompleted++;
         const progress = `[${globalCompleted}/${scenarios.length}]`;
 
-        if (argv.resume && resultExists(scenario.id, mode)) {
+        if (argv.resume && resultExists(scenario.id, mode, runId)) {
           console.log(`${progress}${laneTag} SKIP (exists): ${scenario.id}`);
           const existing = JSON.parse(
-            fs.readFileSync(path.join(resultsDir(mode), `${scenario.id}.json`), 'utf-8'),
+            fs.readFileSync(path.join(resultsDir(mode, runId), `${scenario.id}.json`), 'utf-8'),
           ) as ScenarioResult;
           laneResults.push(existing);
           needsReset = true; // next non-skipped scenario should still reset
@@ -511,7 +609,8 @@ async function runGcp(): Promise<void> {
           preCreateCount,
         });
         laneResults.push(result);
-        saveResult(result, mode);
+        saveResult(result, mode, runId);
+        if (currentMetadata) currentMetadata.scenariosCompleted = allResults.length + laneResults.length;
       }
 
       console.log(`\n---${laneTag} Tearing down ${cluster} broker pool ---`);
@@ -557,7 +656,8 @@ async function runGcp(): Promise<void> {
   // because gcloud returned non-zero (partial batch failure).
   cleanupAllVms();
 
-  generateReport(allResults, mode);
+  generateReport(allResults, mode, runId);
+  markRunCompleted(allResults.length);
 }
 
 // ─── Entry point ─────────────────────────────────────────
