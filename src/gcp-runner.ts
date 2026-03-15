@@ -1117,17 +1117,21 @@ function parsePrometheusText(text: string): MetricsSnapshot {
 async function scrapeMetricsGcp(opts: GcpOptions, pool: BrokerPool): Promise<MetricsSnapshot> {
   const combined: MetricsSnapshot = { counters: {}, histCounts: {}, histSums: {} };
 
+  const scrapeOne = async (vm: string, ip: string): Promise<{ stdout: string; exitCode: number }> => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const r = isRunningOnGcpVm()
+        ? await spawnAsync('curl', ['-sf', '--connect-timeout', '5', '--max-time', '30',
+            `http://${ip}:9600/actuator/prometheus`], 40_000)
+        : await gcloudAsync(sshArgs(opts, vm,
+            'curl -sf --max-time 30 http://localhost:9600/actuator/prometheus'), 60_000);
+      if (r.exitCode === 0 && r.stdout.length > 0) return r;
+      if (attempt < 2) await new Promise(res => setTimeout(res, 2000));
+    }
+    return { stdout: '', exitCode: -1 };
+  };
+
   const results = await Promise.all(
-    pool.vmNames.map((vm, i) => {
-      const ip = pool.internalIps[i];
-      // Use direct curl if on GCP, SSH otherwise
-      if (isRunningOnGcpVm()) {
-        return spawnAsync('curl', ['-sf', '--connect-timeout', '3', '--max-time', '10',
-          `http://${ip}:9600/actuator/prometheus`], 15_000);
-      }
-      return gcloudAsync(sshArgs(opts, vm,
-        'curl -sf http://localhost:9600/actuator/prometheus'), 30_000);
-    }),
+    pool.vmNames.map((vm, i) => scrapeOne(vm, pool.internalIps[i])),
   );
 
   for (const r of results) {
@@ -1141,7 +1145,7 @@ async function scrapeMetricsGcp(opts: GcpOptions, pool: BrokerPool): Promise<Met
   return combined;
 }
 
-function computeMetricsDelta(before: MetricsSnapshot, after: MetricsSnapshot): ServerMetrics {
+function computeMetricsDelta(before: MetricsSnapshot, after: MetricsSnapshot): ServerMetrics | null {
   const d = (metric: string) => (after.counters[metric] || 0) - (before.counters[metric] || 0);
   const hc = (metric: string) => (after.histCounts[metric] || 0) - (before.histCounts[metric] || 0);
   const hs = (metric: string) => (after.histSums[metric] || 0) - (before.histSums[metric] || 0);
@@ -1150,7 +1154,7 @@ function computeMetricsDelta(before: MetricsSnapshot, after: MetricsSnapshot): S
     return count > 0 ? (hs(metric) / count) * 1000 : null;
   };
 
-  return {
+  const result: ServerMetrics = {
     receivedRequests: d('zeebe_received_request_count_total'),
     droppedRequests: d('zeebe_dropped_request_count_total'),
     deferredAppends: d('zeebe_deferred_append_count_total'),
@@ -1163,6 +1167,13 @@ function computeMetricsDelta(before: MetricsSnapshot, after: MetricsSnapshot): S
     jobLifetimeAvgMs: avgMs('zeebe_job_life_time_seconds'),
     piExecutionAvgMs: avgMs('zeebe_process_instance_execution_time_seconds'),
   };
+
+  // Negative counter delta means the after-scrape failed — discard
+  if (result.receivedRequests < 0 || result.recordsProcessed < 0) {
+    console.warn('  [metrics] After-scrape appears invalid (negative deltas), discarding');
+    return null;
+  }
+  return result;
 }
 
 // ─── GCS coordination ────────────────────────────────────
