@@ -203,6 +203,7 @@ public class Worker {
         final HttpRequest simReq = (simClient != null)
                 ? HttpRequest.newBuilder()
                         .uri(URI.create("http://127.0.0.1:" + httpSimPort + "/work"))
+                        .timeout(Duration.ofSeconds(5))
                         .GET().build()
                 : null;
 
@@ -277,7 +278,11 @@ public class Worker {
                 os.write(resp);
             }
         });
-        server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+        // Use a cached platform-thread pool instead of virtual threads.
+        // com.sun.net.httpserver.HttpServer internals use synchronized blocks,
+        // which causes virtual-thread carrier pinning when the handler sleeps —
+        // deadlocking the server on small VMs (few carrier threads).
+        server.setExecutor(Executors.newCachedThreadPool());
         server.start();
         return server.getAddress().getPort();
     }
