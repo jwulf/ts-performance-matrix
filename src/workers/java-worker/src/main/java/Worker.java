@@ -192,8 +192,14 @@ public class Worker {
         var done = new AtomicBoolean(false);
 
         // Shared HTTP client for sim server calls (re-creating per job exhausts file descriptors)
+        // Force HTTP/1.1: default HttpClient prefers HTTP/2 and attempts h2c upgrade against
+        // com.sun.net.httpserver which only speaks HTTP/1.1, causing hangs.
         final HttpClient simClient = ("http".equals(HANDLER_TYPE) && httpSimPort > 0)
-                ? HttpClient.newHttpClient() : null;
+                ? HttpClient.newBuilder()
+                        .version(HttpClient.Version.HTTP_1_1)
+                        .connectTimeout(Duration.ofSeconds(5))
+                        .build()
+                : null;
         final HttpRequest simReq = (simClient != null)
                 ? HttpRequest.newBuilder()
                         .uri(URI.create("http://127.0.0.1:" + httpSimPort + "/work"))

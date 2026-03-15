@@ -591,7 +591,7 @@ echo "[leader] Producer finished"
         producerBlock = `
 # ─── Leader: deploy + pre-create ───
 ${bpmnDownload}
-${producerEnv} java -jar java-worker.jar --produce
+${producerEnv} java -Djava.security.egd=file:/dev/./urandom -jar java-worker.jar --produce
 echo "[leader] Producer finished"
 `;
         break;
@@ -704,7 +704,7 @@ ${barrierReady}
 
 # Run worker
 ${envBlock} \\
-java -jar java-worker.jar
+java -Djava.security.egd=file:/dev/./urandom -jar java-worker.jar
 
 ${uploadResult}
 `;
