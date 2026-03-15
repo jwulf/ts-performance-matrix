@@ -800,13 +800,21 @@ async function deleteVms(opts: GcpOptions, vmNames: string[]): Promise<void> {
 }
 
 async function getVmInternalIp(opts: GcpOptions, vmName: string): Promise<string> {
-  const r = await gcloudAsync([
-    'compute', 'instances', 'describe', vmName,
-    '--project', opts.project,
-    '--zone', opts.zone,
-    '--format', 'get(networkInterfaces[0].networkIP)',
-  ]);
-  return r.stdout.trim();
+  // Retry up to 5 times — gcloud can return empty output under API throttling
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    const r = await gcloudAsync([
+      'compute', 'instances', 'describe', vmName,
+      '--project', opts.project,
+      '--zone', opts.zone,
+      '--format', 'get(networkInterfaces[0].networkIP)',
+    ]);
+    const ip = r.stdout.trim();
+    if (ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip)) return ip;
+    console.warn(`[gcp]${opts.laneTag ?? ''} getVmInternalIp(${vmName}): attempt ${attempt}/5 returned "${ip}" (exit ${r.exitCode}) — retrying in ${attempt * 5}s...`);
+    await new Promise((resolve) => setTimeout(resolve, attempt * 5_000));
+  }
+  console.error(`[gcp]${opts.laneTag ?? ''} getVmInternalIp(${vmName}): all 5 attempts failed — returning empty`);
+  return '';
 }
 
 // ─── Broker pool management ──────────────────────────────
@@ -844,6 +852,14 @@ async function provisionBrokerPool(opts: GcpOptions, cluster: ClusterConfig): Pr
   // Collect IPs for all nodes (in parallel)
   const internalIps = await Promise.all(vmNames.map((vm) => getVmInternalIp(opts, vm)));
   console.log(`[gcp]${opts.laneTag ?? ''} Broker IPs: ${vmNames.map((n, i) => `${n}=${internalIps[i]}`).join(', ')}`);
+
+  // Fail fast if any IP is empty (gcloud throttling / API failure)
+  const emptyIps = vmNames.filter((_, i) => !internalIps[i]);
+  if (emptyIps.length > 0) {
+    console.error(`[gcp]${opts.laneTag ?? ''} FAILED — could not resolve IPs for: ${emptyIps.join(', ')}`);
+    await deleteVms(opts, vmNames);
+    return null;
+  }
 
   const pool: BrokerPool = { cluster, vmNames, internalIps };
 
@@ -1178,22 +1194,22 @@ function computeMetricsDelta(before: MetricsSnapshot, after: MetricsSnapshot): S
 
 // ─── GCS coordination ────────────────────────────────────
 
-function gcsWaitForFiles(bucket: string, prefix: string, expectedCount: number, timeoutMs: number): boolean {
+async function gcsWaitForFiles(bucket: string, prefix: string, expectedCount: number, timeoutMs: number): Promise<boolean> {
   const startTime = Date.now();
   const deadline = startTime + timeoutMs;
   let lastLoggedCount = -1;
   let pollCount = 0;
   while (Date.now() < deadline) {
     pollCount++;
-    const output = gsutil(['ls', `gs://${bucket}/${prefix}`], 15_000);
-    const files = output.trim().split('\n').filter((l) => l.trim().length > 0);
+    const r = await spawnAsync('gsutil', ['ls', `gs://${bucket}/${prefix}`], 15_000);
+    const files = (r.stdout || '').trim().split('\n').filter((l) => l.trim().length > 0);
     if (files.length >= expectedCount) return true;
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     if (files.length !== lastLoggedCount || pollCount % 15 === 1) { // Log on change or every ~30s
       console.log(`    ↳ GCS barrier: ${files.length}/${expectedCount} files (${elapsed}s elapsed)`);
       lastLoggedCount = files.length;
     }
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
   }
   return false;
 }
@@ -1274,7 +1290,7 @@ export async function runScenarioGcp(
 
   // Wait for all workers to be ready
   console.log(`  [${scenario.id}] Waiting for ${P} workers to be ready...`);
-  const workersReady = gcsWaitForFiles(
+  const workersReady = await gcsWaitForFiles(
     opts.bucket,
     `${scenarioGcsPrefix}/ready/`,
     P,
@@ -1321,7 +1337,7 @@ export async function runScenarioGcp(
   const t0 = Date.now();
 
   // Wait for results
-  const resultsReady = gcsWaitForFiles(
+  const resultsReady = await gcsWaitForFiles(
     opts.bucket,
     `${scenarioGcsPrefix}/results/`,
     P,
