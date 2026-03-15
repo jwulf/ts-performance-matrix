@@ -443,6 +443,20 @@ async function runGcp(): Promise<void> {
     console.log(`Distributing across ${laneAssignments.length} lanes (${clusterSummary}): [${laneCounts.join(', ')}] scenarios`);
   }
 
+  // Emit detailed lane→scenario mapping for debugging
+  console.log(`\n${'═'.repeat(70)}`);
+  console.log(`  LANE ASSIGNMENTS  (${laneAssignments.length} lanes, ${scenarios.length} scenarios)`);
+  console.log(`${'═'.repeat(70)}`);
+  for (let li = 0; li < laneAssignments.length; li++) {
+    for (const group of laneAssignments[li]) {
+      console.log(`\n  [lane ${li}] ${group.cluster} — ${group.scenarios.length} scenarios:`);
+      for (const s of group.scenarios) {
+        console.log(`    • ${s.id}`);
+      }
+    }
+  }
+  console.log(`${'═'.repeat(70)}\n`);
+
   const allResults: ScenarioResult[] = [];
   let globalCompleted = 0;
 

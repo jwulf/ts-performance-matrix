@@ -16,7 +16,7 @@ import * as path from 'node:path';
 import * as childProcess from 'node:child_process';
 import type { ScenarioConfig, ClusterConfig, SdkLanguage } from './config.js';
 import { GCP_DEFAULTS } from './config.js';
-import type { ScenarioResult, ProcessResult } from './types.js';
+import type { ScenarioResult, ProcessResult, ServerMetrics } from './types.js';
 import { jainFairness } from './types.js';
 
 // ─── Active VM tracking (for SIGINT cleanup) ────────────
@@ -1066,6 +1066,105 @@ async function resetBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<bool
   return false;
 }
 
+// ─── Prometheus metrics scraping ─────────────────────────
+
+interface MetricsSnapshot {
+  counters: Record<string, number>;
+  histCounts: Record<string, number>;
+  histSums: Record<string, number>;
+}
+
+const PROM_COUNTERS = [
+  'zeebe_received_request_count_total',
+  'zeebe_dropped_request_count_total',
+  'zeebe_deferred_append_count_total',
+  'zeebe_broker_jobs_pushed_count_total',
+  'zeebe_broker_jobs_push_fail_count_total',
+  'zeebe_stream_processor_records_total',
+];
+
+const PROM_HISTOGRAMS = [
+  'zeebe_job_activation_time_seconds',
+  'zeebe_job_life_time_seconds',
+  'zeebe_process_instance_execution_time_seconds',
+];
+
+function parsePrometheusText(text: string): MetricsSnapshot {
+  const snap: MetricsSnapshot = { counters: {}, histCounts: {}, histSums: {} };
+  for (const line of text.split('\n')) {
+    if (line.startsWith('#') || !line.trim()) continue;
+    for (const metric of PROM_COUNTERS) {
+      if (line.startsWith(metric)) {
+        const val = parseFloat(line.split(/\s+/).pop() || '0');
+        snap.counters[metric] = (snap.counters[metric] || 0) + val;
+      }
+    }
+    for (const metric of PROM_HISTOGRAMS) {
+      if (line.startsWith(`${metric}_count`)) {
+        const val = parseFloat(line.split(/\s+/).pop() || '0');
+        snap.histCounts[metric] = (snap.histCounts[metric] || 0) + val;
+      }
+      if (line.startsWith(`${metric}_sum`)) {
+        const val = parseFloat(line.split(/\s+/).pop() || '0');
+        snap.histSums[metric] = (snap.histSums[metric] || 0) + val;
+      }
+    }
+  }
+  return snap;
+}
+
+/** Scrape Prometheus from all brokers in the pool via SSH, summing across nodes. */
+async function scrapeMetricsGcp(opts: GcpOptions, pool: BrokerPool): Promise<MetricsSnapshot> {
+  const combined: MetricsSnapshot = { counters: {}, histCounts: {}, histSums: {} };
+
+  const results = await Promise.all(
+    pool.vmNames.map((vm, i) => {
+      const ip = pool.internalIps[i];
+      // Use direct curl if on GCP, SSH otherwise
+      if (isRunningOnGcpVm()) {
+        return spawnAsync('curl', ['-sf', '--connect-timeout', '3', '--max-time', '10',
+          `http://${ip}:9600/actuator/prometheus`], 15_000);
+      }
+      return gcloudAsync(sshArgs(opts, vm,
+        'curl -sf http://localhost:9600/actuator/prometheus'), 30_000);
+    }),
+  );
+
+  for (const r of results) {
+    if (r.exitCode !== 0) continue;
+    const snap = parsePrometheusText(r.stdout || '');
+    for (const [k, v] of Object.entries(snap.counters)) combined.counters[k] = (combined.counters[k] || 0) + v;
+    for (const [k, v] of Object.entries(snap.histCounts)) combined.histCounts[k] = (combined.histCounts[k] || 0) + v;
+    for (const [k, v] of Object.entries(snap.histSums)) combined.histSums[k] = (combined.histSums[k] || 0) + v;
+  }
+
+  return combined;
+}
+
+function computeMetricsDelta(before: MetricsSnapshot, after: MetricsSnapshot): ServerMetrics {
+  const d = (metric: string) => (after.counters[metric] || 0) - (before.counters[metric] || 0);
+  const hc = (metric: string) => (after.histCounts[metric] || 0) - (before.histCounts[metric] || 0);
+  const hs = (metric: string) => (after.histSums[metric] || 0) - (before.histSums[metric] || 0);
+  const avgMs = (metric: string) => {
+    const count = hc(metric);
+    return count > 0 ? (hs(metric) / count) * 1000 : null;
+  };
+
+  return {
+    receivedRequests: d('zeebe_received_request_count_total'),
+    droppedRequests: d('zeebe_dropped_request_count_total'),
+    deferredAppends: d('zeebe_deferred_append_count_total'),
+    jobsPushed: d('zeebe_broker_jobs_pushed_count_total'),
+    jobsPushFailed: d('zeebe_broker_jobs_push_fail_count_total'),
+    recordsProcessed: d('zeebe_stream_processor_records_total'),
+    backpressureLimit: 0,
+    backpressureInflight: 0,
+    jobActivationAvgMs: avgMs('zeebe_job_activation_time_seconds'),
+    jobLifetimeAvgMs: avgMs('zeebe_job_life_time_seconds'),
+    piExecutionAvgMs: avgMs('zeebe_process_instance_execution_time_seconds'),
+  };
+}
+
 // ─── GCS coordination ────────────────────────────────────
 
 function gcsWaitForFiles(bucket: string, prefix: string, expectedCount: number, timeoutMs: number): boolean {
@@ -1202,6 +1301,9 @@ export async function runScenarioGcp(
     return errorResult(scenario, 'Workers failed to become ready');
   }
 
+  // Scrape metrics before GO
+  const metricsBefore = await scrapeMetricsGcp(opts, brokerPool);
+
   // Signal GO
   console.log(`  [${scenario.id}] All workers ready, sending GO...`);
   gcsWriteFlag(opts.bucket, `${scenarioGcsPrefix}/go`);
@@ -1246,6 +1348,9 @@ export async function runScenarioGcp(
     }
   }
 
+  // Scrape metrics after results collected
+  const metricsAfter = await scrapeMetricsGcp(opts, brokerPool);
+
   // Cleanup worker VMs
   await deleteVms(opts, workerVmNames);
 
@@ -1264,7 +1369,7 @@ export async function runScenarioGcp(
     wallClockS, aggregateThroughput,
     jainFairness: fairness,
     processResults,
-    serverMetrics: null, // TODO: scrape from broker VM
+    serverMetrics: computeMetricsDelta(metricsBefore, metricsAfter),
     status: isTimeout ? 'timeout' : 'ok',
     preCreate,
   };
