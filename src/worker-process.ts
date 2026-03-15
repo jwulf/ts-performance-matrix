@@ -7,7 +7,7 @@
  *
  * Environment variables:
  *   WORKER_PROCESS_ID     — unique process identifier (e.g., "process-0")
- *   SDK_MODE              — rest | grpc-polling
+ *   SDK_MODE              — rest | grpc-streaming | grpc-polling
  *   HANDLER_TYPE          — cpu | http
  *   HANDLER_LATENCY_MS    — handler simulation latency (default: 0 for cpu, 200 for http)
  *   NUM_WORKERS           — number of workers in this process (WPP)
@@ -234,6 +234,70 @@ async function runGrpcPoll(httpSimPort: number): Promise<{ metrics: WorkerMetric
   return { metrics: workerMetrics, wallClockS };
 }
 
+// ─── gRPC stream mode runner ─────────────────────────────
+
+async function runGrpcStream(httpSimPort: number): Promise<{ metrics: WorkerMetrics[]; wallClockS: number }> {
+  const { Camunda8 } = await import('@camunda8/sdk');
+
+  const c8 = new Camunda8({
+    ZEEBE_GRPC_ADDRESS: BROKER_GRPC_URL,
+    ZEEBE_REST_ADDRESS: BROKER_REST_URL,
+    CAMUNDA_OAUTH_DISABLED: true,
+    CAMUNDA_SECURE_CONNECTION: false,
+  } as any);
+
+  const zeebe = c8.getZeebeGrpcApiClient();
+
+  const workerMetrics: WorkerMetrics[] = Array.from({ length: NUM_WORKERS }, (_, i) => ({
+    workerId: `${PROCESS_ID}-w${i}`,
+    completed: 0,
+    errors: 0,
+  }));
+
+  let done = false;
+  const t0 = Date.now();
+  const deadline = t0 + SCENARIO_TIMEOUT_S * 1000;
+  const totalTarget = NUM_WORKERS * TARGET_PER_WORKER;
+
+  // Single gRPC streaming worker sized for all workers in this process
+  const worker = await zeebe.streamJobs({
+    type: 'test-job',
+    taskHandler: async (job) => {
+      if (HANDLER_TYPE === 'cpu' && HANDLER_LATENCY_MS > 0) {
+        cpuWork(HANDLER_LATENCY_MS);
+      } else if (HANDLER_TYPE === 'http' && httpSimPort > 0) {
+        await fetch(`http://127.0.0.1:${httpSimPort}/work`);
+      }
+
+      // Round-robin assignment
+      const minWorker = workerMetrics.reduce((a, b) =>
+        a.completed < b.completed ? a : b
+      );
+      minWorker.completed++;
+
+      const totalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
+      if (totalCompleted >= totalTarget) done = true;
+
+      return job.complete({});
+    },
+    pollMaxJobsToActivate: ACTIVATE_BATCH * NUM_WORKERS,
+    timeout: 30_000,
+    tenantIds: ['<default>'],
+    worker: `${PROCESS_ID}-stream`,
+  });
+
+  while (!done && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  done = true;
+  try { await worker.close(); } catch { /* ignore */ }
+  try { await zeebe.close(); } catch { /* ignore */ }
+
+  const wallClockS = (Date.now() - t0) / 1000;
+  return { metrics: workerMetrics, wallClockS };
+}
+
 // ─── Main ────────────────────────────────────────────────
 
 async function main() {
@@ -253,7 +317,9 @@ async function main() {
 
   let result: { metrics: WorkerMetrics[]; wallClockS: number };
 
-  if (SDK_MODE === 'grpc-polling') {
+  if (SDK_MODE === 'grpc-streaming') {
+    result = await runGrpcStream(httpSimPort);
+  } else if (SDK_MODE === 'grpc-polling') {
     result = await runGrpcPoll(httpSimPort);
   } else {
     result = await runRestBalanced(httpSimPort);

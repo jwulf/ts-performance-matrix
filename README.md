@@ -19,12 +19,12 @@ Not all languages support all modes:
 
 | Language | Modes |
 |----------|-------|
-| TypeScript | `rest`, `grpc-polling` |
+| TypeScript | `rest`, `grpc-streaming`, `grpc-polling` |
 | Python | `rest` |
 | C# | `rest` |
 | Java | `rest`, `grpc-streaming`, `grpc-polling` |
 
-Only valid combinations where W is divisible by WPP are generated (20 topologies × 7 language-mode combos × 2 handlers × 2 clusters). Full matrix: **~560 scenarios**.
+Only valid combinations where W is divisible by WPP are generated (20 topologies × 8 language-mode combos × 2 handlers × 2 clusters). Full matrix: **~640 scenarios**.
 
 ## Prerequisites
 
