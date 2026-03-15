@@ -35,6 +35,7 @@ import {
   DEFAULT_PRE_CREATE_COUNT,
 } from './config.js';
 import type { ScenarioResult } from './types.js';
+import type { BrokerPool } from './gcp-runner.js';
 
 // ─── CLI argument parsing ────────────────────────────────
 
@@ -559,7 +560,13 @@ async function runGcp(): Promise<void> {
   let globalCompleted = 0;
 
   // ── Run a single lane ──────────────────────────────────
-  async function runLane(laneIndex: number, groups: ClusterGroup[]): Promise<ScenarioResult[]> {
+  // If preProvisionedPools is provided, the lane will use those pools instead
+  // of provisioning its own. Keys are cluster type names.
+  async function runLane(
+    laneIndex: number,
+    groups: ClusterGroup[],
+    preProvisionedPools?: Map<ClusterConfig, BrokerPool>,
+  ): Promise<ScenarioResult[]> {
     const laneResults: ScenarioResult[] = [];
     const laneTag = lanes > 1 ? ` [lane ${laneIndex}]` : '';
     const laneRunId = lanes > 1 ? `${runId}-l${laneIndex}` : runId;
@@ -567,8 +574,13 @@ async function runGcp(): Promise<void> {
     const laneGcpOpts = { ...gcpOpts, runId: laneRunId, laneTag: laneTag || undefined };
 
     for (const { cluster, scenarios: clusterScenarios } of groups) {
-      console.log(`\n---${laneTag} Provisioning ${cluster} broker pool ---`);
-      const brokerPool = await provisionBrokerPool(laneGcpOpts, cluster);
+      let brokerPool: BrokerPool | null = preProvisionedPools?.get(cluster) ?? null;
+      const wasPreProvisioned = brokerPool !== null;
+
+      if (!brokerPool) {
+        console.log(`\n---${laneTag} Provisioning ${cluster} broker pool ---`);
+        brokerPool = await provisionBrokerPool(laneGcpOpts, cluster);
+      }
       if (!brokerPool) {
         console.error(`${laneTag} Broker provisioning failed for ${cluster} — skipping ${clusterScenarios.length} scenarios`);
         continue;
@@ -613,8 +625,12 @@ async function runGcp(): Promise<void> {
         if (currentMetadata) currentMetadata.scenariosCompleted = allResults.length + laneResults.length;
       }
 
-      console.log(`\n---${laneTag} Tearing down ${cluster} broker pool ---`);
-      await teardownBrokerPool(laneGcpOpts, brokerPool);
+      if (!wasPreProvisioned) {
+        console.log(`\n---${laneTag} Tearing down ${cluster} broker pool ---`);
+        await teardownBrokerPool(laneGcpOpts, brokerPool);
+      } else {
+        console.log(`${laneTag} Skipping teardown for pre-provisioned ${cluster} pool (caller will handle)`);
+      }
     }
 
     return laneResults;
@@ -626,28 +642,112 @@ async function runGcp(): Promise<void> {
     const results = await runLane(0, laneAssignments[0] || []);
     allResults.push(...results);
   } else {
-    // Multi-lane — run all lanes concurrently, with staggered starts to avoid
-    // overwhelming the GCP API and control VM with 16+ simultaneous gcloud processes.
-    // Each lane waits (laneIndex * 15s) before starting broker provisioning.
-    const lanePromises = laneAssignments
-      .filter((groups) => groups.length > 0)
-      .map((groups, i) =>
+    // Multi-lane strategy:
+    // 3-broker pools are pre-provisioned sequentially to avoid GCP API contention
+    // (creating 3 VMs per pool simultaneously across multiple lanes overwhelms quota).
+    // 1-broker lanes start eagerly with staggered starts (cheap: 1 VM each).
+    // Once all 3-broker pools are ready, those lanes start immediately with their
+    // pre-provisioned pools.
+
+    // Categorize lanes by cluster type
+    const oneBrokerLanes: Array<{ index: number; groups: ClusterGroup[] }> = [];
+    const threeBrokerLanes: Array<{ index: number; groups: ClusterGroup[] }> = [];
+
+    for (let i = 0; i < laneAssignments.length; i++) {
+      const groups = laneAssignments[i];
+      if (groups.length === 0) continue;
+      const cluster = groups[0].cluster;
+      if (cluster === '3broker') {
+        threeBrokerLanes.push({ index: i, groups });
+      } else {
+        oneBrokerLanes.push({ index: i, groups });
+      }
+    }
+
+    console.log(`\nLane strategy: ${oneBrokerLanes.length} x 1-broker (eager), ${threeBrokerLanes.length} x 3-broker (pre-provisioned)`);
+
+    // Pre-provision all 3-broker pools sequentially
+    const preProvisionedPools = new Map<number, BrokerPool>(); // lane index → pool
+    if (threeBrokerLanes.length > 0) {
+      console.log(`\n${'─'.repeat(50)}`);
+      console.log(`  PRE-PROVISIONING ${threeBrokerLanes.length} x 3-broker pools (sequential)`);
+      console.log(`${'─'.repeat(50)}`);
+      for (const { index, groups } of threeBrokerLanes) {
+        const cluster = groups[0].cluster;
+        const laneRunId = `${runId}-l${index}`;
+        const laneGcpOpts = { ...gcpOpts, runId: laneRunId, laneTag: ` [lane ${index}]` };
+        console.log(`\n[lane ${index}] Provisioning ${cluster} pool...`);
+        const pool = await provisionBrokerPool(laneGcpOpts, cluster);
+        if (pool) {
+          preProvisionedPools.set(index, pool);
+          console.log(`[lane ${index}] ${cluster} pool ready (${pool.vmNames.join(', ')})`);
+        } else {
+          console.error(`[lane ${index}] ${cluster} pool provisioning failed — lane will skip all scenarios`);
+        }
+      }
+      console.log(`\n${'─'.repeat(50)}`);
+      console.log(`  Pre-provisioning complete: ${preProvisionedPools.size}/${threeBrokerLanes.length} pools ready`);
+      console.log(`${'─'.repeat(50)}\n`);
+    }
+
+    // Launch all lanes concurrently
+    const lanePromises: Array<Promise<ScenarioResult[]>> = [];
+
+    // 1-broker lanes: staggered starts (they provision their own single VM)
+    for (let i = 0; i < oneBrokerLanes.length; i++) {
+      const { index, groups } = oneBrokerLanes[i];
+      lanePromises.push(
         (async () => {
           if (i > 0) {
             const delayMs = i * 15_000;
-            console.log(`[lane ${i}] Staggering start by ${delayMs / 1000}s to reduce API contention...`);
+            console.log(`[lane ${index}] Staggering start by ${delayMs / 1000}s to reduce API contention...`);
             await new Promise((r) => setTimeout(r, delayMs));
           }
-          return runLane(i, groups);
+          return runLane(index, groups);
         })().catch((err) => {
-          console.error(`[lane ${i}] Fatal lane error:`, err);
+          console.error(`[lane ${index}] Fatal lane error:`, err);
           return [] as ScenarioResult[];
         }),
       );
+    }
+
+    // 3-broker lanes: start immediately with pre-provisioned pools
+    for (const { index, groups } of threeBrokerLanes) {
+      const pool = preProvisionedPools.get(index);
+      if (!pool) {
+        // Provisioning failed — lane will have no pool, runLane will skip
+        lanePromises.push(
+          runLane(index, groups).catch((err) => {
+            console.error(`[lane ${index}] Fatal lane error:`, err);
+            return [] as ScenarioResult[];
+          }),
+        );
+        continue;
+      }
+      const poolMap = new Map<ClusterConfig, BrokerPool>();
+      poolMap.set(groups[0].cluster, pool);
+      lanePromises.push(
+        runLane(index, groups, poolMap).catch((err) => {
+          console.error(`[lane ${index}] Fatal lane error:`, err);
+          return [] as ScenarioResult[];
+        }),
+      );
+    }
 
     const laneResults = await Promise.all(lanePromises);
     for (const results of laneResults) {
       allResults.push(...results);
+    }
+
+    // Teardown pre-provisioned 3-broker pools
+    for (const { index, groups } of threeBrokerLanes) {
+      const pool = preProvisionedPools.get(index);
+      if (pool) {
+        const laneRunId = `${runId}-l${index}`;
+        const laneGcpOpts = { ...gcpOpts, runId: laneRunId, laneTag: ` [lane ${index}]` };
+        console.log(`\n--- [lane ${index}] Tearing down pre-provisioned ${groups[0].cluster} pool ---`);
+        await teardownBrokerPool(laneGcpOpts, pool);
+      }
     }
   }
 
