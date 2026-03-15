@@ -1014,10 +1014,14 @@ async function resetBrokerPool(opts: GcpOptions, pool: BrokerPool): Promise<bool
   const resetResults = await Promise.all(
     pool.vmNames.map((vmName, i) => {
       const dockerRunCmd = brokerDockerRunCmd(i, clusterSize, pool.internalIps);
+      // Force-kill (no graceful shutdown) to avoid snapshot corruption from partial writes.
+      // Then nuke all Docker state: containers, volumes, build cache — so the next
+      // `docker run` starts with zero Zeebe/RocksDB/Raft state, identical to first boot.
       const resetScript = [
-        'docker stop camunda-broker 2>/dev/null || true',
-        'docker rm -v camunda-broker 2>/dev/null || true',
-        'docker volume prune -f',
+        'docker kill camunda-broker 2>/dev/null || true',
+        'docker rm -f -v camunda-broker 2>/dev/null || true',
+        'docker volume rm -f $(docker volume ls -q) 2>/dev/null || true',
+        'docker system prune -f --volumes 2>/dev/null || true',
         dockerRunCmd,
       ].join(' && ');
       return gcloudAsync(sshArgs(opts, vmName, resetScript), 120_000)
