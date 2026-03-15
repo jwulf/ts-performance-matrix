@@ -216,10 +216,10 @@ public class Worker {
                     try {
                         if ("cpu".equals(HANDLER_TYPE) && HANDLER_LATENCY_MS > 0) {
                             cpuWork(HANDLER_LATENCY_MS);
-                        } else if (simClient != null && simReq != null) {
-                            try {
-                                simClient.send(simReq, HttpResponse.BodyHandlers.discarding());
-                            } catch (Exception ignored) {}
+                        } else if ("http".equals(HANDLER_TYPE) && HANDLER_LATENCY_MS > 0) {
+                            // Use Thread.sleep to simulate HTTP latency instead of actual HTTP call.
+                            // The HttpClient/HttpServer approach hangs on GCP Debian VMs for unknown reasons.
+                            Thread.sleep(HANDLER_LATENCY_MS);
                         }
 
                         jobClient.newCompleteCommand(job).variables("{\"done\":true}").send().join();
