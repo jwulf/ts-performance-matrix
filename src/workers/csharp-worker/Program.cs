@@ -7,6 +7,7 @@
 //   NUM_WORKERS, TARGET_PER_WORKER, ACTIVATE_BATCH, PAYLOAD_SIZE_KB,
 //   SCENARIO_TIMEOUT_S, BROKER_REST_URL, RESULT_FILE, READY_FILE, GO_FILE
 
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
@@ -47,6 +48,20 @@ var jsonOpts = new JsonSerializerOptions
     WriteIndented = true,
 };
 
+// ─── Error type aggregation ──────────────────────────────
+
+var errorTypes = new ConcurrentDictionary<string, int>();
+
+static string ErrorKey(Exception ex)
+{
+    var cause = ex;
+    while (cause.InnerException != null) cause = cause.InnerException;
+    var name = cause.GetType().Name;
+    var msg = cause.Message ?? "";
+    if (msg.Length > 120) msg = msg[..120];
+    return string.IsNullOrEmpty(msg) ? name : $"{name}: {msg}";
+}
+
 try
 {
     Console.WriteLine($"[csharp-worker] id={PROCESS_ID} mode={SDK_MODE} handler={HANDLER_TYPE} workers={NUM_WORKERS}");
@@ -67,6 +82,9 @@ try
 
     Console.WriteLine("[csharp-worker] GO received, starting benchmark...");
 
+    var memSampler = new MemorySampler();
+    memSampler.Start();
+
     var (workerCompleted, workerErrors, wallClockS) = await RunRest(httpSimPort);
 
     simCts?.Cancel();
@@ -75,6 +93,13 @@ try
     var totalErrors = workerErrors.Sum();
     var throughput = wallClockS > 0 ? totalCompleted / wallClockS : 0;
     var perWorkerThroughputs = workerCompleted.Select(c => wallClockS > 0 ? c / wallClockS : 0).ToArray();
+
+    // Sort errorTypes by count descending
+    var sortedErrorTypes = errorTypes
+        .OrderByDescending(kv => kv.Value)
+        .ToDictionary(kv => kv.Key, kv => kv.Value);
+
+    var memoryUsage = memSampler.Stop();
 
     var output = new ResultOutput
     {
@@ -89,9 +114,17 @@ try
         PerWorkerCompleted = workerCompleted,
         PerWorkerErrors = workerErrors,
         PerWorkerThroughputs = perWorkerThroughputs,
+        ErrorTypes = sortedErrorTypes,
+        MemoryUsage = memoryUsage,
     };
 
-    Console.WriteLine($"[csharp-worker] Done: {totalCompleted} completed, {totalErrors} errors, {throughput:F1} ops/s");
+    var errorTypeCount = sortedErrorTypes.Count;
+    Console.WriteLine($"[csharp-worker] Done: {totalCompleted} completed, {totalErrors} errors ({errorTypeCount} types), {throughput:F1} ops/s");
+    if (errorTypeCount > 0)
+    {
+        foreach (var (key, count) in sortedErrorTypes.Take(5))
+            Console.WriteLine($"[csharp-worker]   {count}× {key}");
+    }
 
     await File.WriteAllTextAsync(RESULT_FILE, JsonSerializer.Serialize(output, jsonOpts));
     Console.WriteLine($"[csharp-worker] Result written to {RESULT_FILE}");
@@ -144,23 +177,30 @@ async Task<(int[] completed, int[] errors, double wallClockS)> RunRest(int httpS
 
     client.CreateJobWorker(config, async (job, ct) =>
     {
-        // Simulate work
-        if (HANDLER_TYPE == "cpu" && HANDLER_LATENCY_MS > 0)
-            CpuWork(HANDLER_LATENCY_MS);
-        else if (HANDLER_TYPE == "http" && httpSimClient != null)
+        try
         {
-            try { await httpSimClient.GetAsync($"http://127.0.0.1:{httpSimPort}/work", ct); }
-            catch { /* ignore sim errors */ }
+            // Simulate work
+            if (HANDLER_TYPE == "cpu" && HANDLER_LATENCY_MS > 0)
+                CpuWork(HANDLER_LATENCY_MS);
+            else if (HANDLER_TYPE == "http" && httpSimClient != null)
+                await httpSimClient.GetAsync($"http://127.0.0.1:{httpSimPort}/work", ct);
+
+            // Round-robin metric tracking
+            var minIdx = MinIndex(workerCompleted);
+            Interlocked.Increment(ref workerCompleted[minIdx]);
+            var total = workerCompleted.Sum();
+            if (total >= totalTarget)
+                Interlocked.Exchange(ref done, 1);
+
+            return new { done = true };
         }
-
-        // Round-robin metric tracking
-        var minIdx = MinIndex(workerCompleted);
-        Interlocked.Increment(ref workerCompleted[minIdx]);
-        var total = workerCompleted.Sum();
-        if (total >= totalTarget)
-            Interlocked.Exchange(ref done, 1);
-
-        return new { done = true };
+        catch (Exception ex)
+        {
+            var minErrIdx = MinIndex(workerErrors);
+            Interlocked.Increment(ref workerErrors[minErrIdx]);
+            errorTypes.AddOrUpdate(ErrorKey(ex), 1, (_, c) => c + 1);
+            throw;
+        }
     });
 
     var cts = new CancellationTokenSource(TimeSpan.FromSeconds(SCENARIO_TIMEOUT_S));
@@ -462,4 +502,65 @@ class ResultOutput
     public int[] PerWorkerErrors { get; set; } = [];
     public double[] PerWorkerThroughputs { get; set; } = [];
     public string? Error { get; set; }
+    public Dictionary<string, int>? ErrorTypes { get; set; }
+    public MemoryUsageOutput? MemoryUsage { get; set; }
+}
+
+class MemoryUsageOutput
+{
+    public double PeakRssMb { get; set; }
+    public double AvgRssMb { get; set; }
+    public int Samples { get; set; }
+}
+
+class MemorySampler
+{
+    private readonly List<long> _samples = new();
+    private readonly object _lock = new();
+    private volatile bool _running;
+    private Thread? _thread;
+
+    public void Start()
+    {
+        _running = true;
+        // Take initial sample
+        lock (_lock) { _samples.Add(Process.GetCurrentProcess().WorkingSet64); }
+        _thread = new Thread(Run) { IsBackground = true, Name = "mem-sampler" };
+        _thread.Start();
+    }
+
+    private void Run()
+    {
+        while (_running)
+        {
+            Thread.Sleep(5000);
+            if (!_running) break;
+            lock (_lock) { _samples.Add(Process.GetCurrentProcess().WorkingSet64); }
+        }
+    }
+
+    public MemoryUsageOutput Stop()
+    {
+        _running = false;
+        _thread?.Join(2000);
+        // Take final sample
+        lock (_lock) { _samples.Add(Process.GetCurrentProcess().WorkingSet64); }
+
+        long peak = 0, sum = 0;
+        lock (_lock)
+        {
+            foreach (var s in _samples)
+            {
+                if (s > peak) peak = s;
+                sum += s;
+            }
+        }
+        var count = _samples.Count;
+        return new MemoryUsageOutput
+        {
+            PeakRssMb = Math.Round(peak / (1024.0 * 1024.0), 1),
+            AvgRssMb = Math.Round(count > 0 ? sum / (double)count / (1024.0 * 1024.0) : 0, 1),
+            Samples = count,
+        };
+    }
 }

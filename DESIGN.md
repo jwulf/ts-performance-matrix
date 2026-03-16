@@ -113,6 +113,122 @@ That's **20 topology configurations** × 10 language-mode combos × 2 handlers �
 11. **Does client-side adaptive backpressure management make a measurable difference** to throughput, and in what scenarios?
 12. **Which SDK/transport combinations are production-viable** at scale, and which have stability issues (error rates, timeouts)?
 
+## SDK Characteristics
+
+The matrix tests four Camunda 8 client SDKs across two distinct SDK packages for TypeScript. Each has a distinct runtime model, transport options, and execution strategy for job handlers. Understanding these differences is essential for interpreting the results.
+
+### Overview
+
+| SDK | Package | Language | Runtime | Transports | Execution Model |
+|-----|---------|----------|---------|------------|-----------------|
+| **TS REST** | `@camunda8/orchestration-cluster-api` | Node.js 22 | Single-threaded event loop | REST | Async handlers on event loop; `rest-threaded` offloads CPU to `worker_threads` |
+| **TS gRPC** | `@camunda8/sdk` | Node.js 22 | Single-threaded event loop | gRPC (streaming & polling) | Async handlers on event loop |
+| **Python** | `camunda-orchestration-sdk` | CPython 3.12 | GIL-constrained threads | REST | `rest`: async handlers via `httpx`; `rest-threaded`: `ThreadPoolExecutor` for CPU work |
+| **C#** | `Camunda.Orchestration.Sdk` | .NET 9 | Task-based async (thread pool) | REST | Async `Task` handlers; runtime manages thread pool automatically |
+| **Java** | `io.camunda:camunda-client-java` | JDK 21 | Thread-per-handler pool | REST, gRPC (streaming & polling) | Fixed execution thread pool; handlers run on SDK-managed threads |
+
+### Transport Modes
+
+| Mode | Protocol | Job Delivery | SDK Package | Available In |
+|------|----------|-------------|-------------|-------------|
+| `rest` | HTTP/1.1 | Long-polling — worker polls broker at 100ms intervals | `@camunda8/orchestration-cluster-api` (TS), respective SDK (others) | All SDKs |
+| `rest-threaded` | HTTP/1.1 | Same as `rest`, but CPU handler work is offloaded to a thread | `@camunda8/orchestration-cluster-api` (TS), `camunda-orchestration-sdk` (Python) | TS, Python |
+| `grpc-streaming` | gRPC/HTTP2 | Broker pushes jobs to the client over a persistent stream | `@camunda8/sdk` (TS), `camunda-client-java` (Java) | TS, Java |
+| `grpc-polling` | gRPC/HTTP2 | Worker polls broker via gRPC `ActivateJobs` RPC | `@camunda8/sdk` (TS), `camunda-client-java` (Java) | TS, Java |
+
+### TypeScript — REST modes (`@camunda8/orchestration-cluster-api`)
+
+- **Event loop**: All job handler callbacks run on the single Node.js event loop. I/O-bound handlers (`await fetch(...)`) yield the loop and allow other handlers to execute concurrently. CPU-bound handlers (`Math.sin` busy-loop) **block the event loop**, preventing all other handlers from executing until completion.
+- **`rest-threaded` mode**: Offloads each CPU handler invocation to a `worker_threads` `Worker`, keeping the event loop free for job polling and I/O. Returns results via `postMessage`. This eliminates the event-loop-blocking penalty for CPU-bound workloads.
+- **Backpressure**: The SDK's `BackpressureManager` adapts concurrency based on broker responses (429s, rate headers).
+- **Job completion**: Fire-and-forget async — `job.complete()` returns a Promise that is not awaited in the handler.
+- **Concurrency control**: `maxParallelJobs = ACTIVATE_BATCH × NUM_WORKERS` (default: 32 × WPP). This is both the job activation limit *and* the concurrent handler limit — the SDK invokes up to this many handler callbacks simultaneously. On the event loop, I/O handlers run truly concurrently (many `await`s in flight); CPU handlers serialize regardless.
+
+### TypeScript — gRPC modes (`@camunda8/sdk`)
+
+- **Different SDK**: gRPC modes use `@camunda8/sdk` (the Zeebe gRPC client), which is a separate package from the REST SDK. It uses `getZeebeGrpcApiClient()` and has different API conventions (`taskType`/`taskHandler` vs `jobType`/`jobHandler`).
+- **Streaming**: `zeebe.streamJobs()` opens a persistent gRPC stream; the broker pushes jobs to the client. Uses `pollMaxJobsToActivate` for flow control.
+- **Polling**: `zeebe.createWorker()` polls via gRPC `ActivateJobs` RPC at the configured interval.
+- **Same event loop constraints**: CPU handlers block the event loop identically to REST mode. There is no `grpc-threaded` variant.
+- **No backpressure management**: The `@camunda8/sdk` gRPC client does not implement adaptive backpressure.
+
+### Python (`camunda-orchestration-sdk`)
+
+- **GIL**: The Global Interpreter Lock means only one thread runs Python bytecode at a time. CPU-bound handlers cannot achieve true parallelism even with threads. However, I/O-bound handlers release the GIL during `await`, allowing effective concurrency.
+- **`rest` mode**: Uses `httpx` async client. Handlers run as `async` coroutines on the asyncio event loop.
+- **`rest-threaded` mode**: Uses `ThreadPoolExecutor` (via `execution_strategy="thread"`) to offload handler execution. For CPU-bound work this provides limited benefit (GIL), but allows the main event loop to remain responsive for job activation and completion. For I/O-bound work, threads add overhead without benefit since `httpx` async is already non-blocking.
+- **No gRPC**: The Python SDK currently supports REST only.
+- **Concurrency control**: `max_concurrent_jobs = ACTIVATE_BATCH × NUM_WORKERS` (default: 32 × WPP). Acts as both the activation and handler concurrency limit.
+
+### C\# (`Camunda.Orchestration.Sdk`)
+
+- **Task-based**: Handlers run as `async Task` methods on the .NET thread pool. The runtime automatically scales the thread pool based on demand.
+- **Natural concurrency**: Both CPU and I/O handlers are async. The .NET thread pool efficiently handles both patterns — I/O handlers yield threads during `await`, CPU handlers get dedicated thread pool threads.
+- **REST only**: The C# SDK supports REST transport only.
+- **Backpressure**: Implements the same `BackpressureManager` pattern as the TS REST SDK.
+- **Concurrency control**: `MaxConcurrentJobs = ACTIVATE_BATCH × NUM_WORKERS` (default: 32 × WPP). All concurrent handlers run on the .NET thread pool, which dynamically scales to accommodate them.
+
+### Java (`io.camunda:camunda-client-java`)
+
+- **Thread pool**: The SDK uses a configurable execution thread pool (`numJobWorkerExecutionThreads`). Each handler runs on a dedicated thread from this pool. **This must be set explicitly** — the default is 1 thread, which serializes all handler execution (limiting throughput to ~5 jobs/s with 200ms handlers).
+- **gRPC native**: Java is the original gRPC SDK. Streaming mode uses the broker's job push stream; polling mode uses the `ActivateJobs` RPC.
+- **REST support**: Added more recently, uses the same HTTP client internally.
+- **Completion model**: `newCompleteCommand(job).send()` returns a `CompletableFuture`. Blocking with `.join()` in the handler causes carrier-thread pinning and deadlock at high concurrency, so the benchmark uses `.whenComplete()` (fire-and-forget with error callback).
+- **Error aggregation**: Failed completions are counted per error type (root cause class + message), enabling diagnosis of systematic failures (e.g., `RESOURCE_EXHAUSTED`, `DEADLINE_EXCEEDED`).
+- **Concurrency control**: Java has a **two-level pipeline** unlike the other SDKs: `maxJobsActive = ACTIVATE_BATCH × NUM_WORKERS` (32 × WPP) controls how many jobs are fetched from the broker, while `numJobWorkerExecutionThreads = min(ACTIVATE_BATCH × NUM_WORKERS, availableProcessors × 100)` controls how many handlers can execute in parallel. A CPU-based hard cap prevents OS thread explosion at high WPP on small VMs.
+
+### Concurrent Handler Execution — A Key Asymmetry
+
+The SDKs differ significantly in how many job handlers can execute concurrently. This is the
+single most important variable affecting throughput comparisons:
+
+| SDK | Max concurrent handlers | How it's configured | At WPP=10 |
+|-----|------------------------|--------------------:|----------:|
+| **Java** | min(32 × WPP, CPUs × 100) | `numJobWorkerExecutionThreads(Math.min(ACTIVATE_BATCH × NUM_WORKERS, availableProcessors × 100))` | **200** (on 2 vCPU) |
+| **C#** | 32 × WPP | `MaxConcurrentJobs = ACTIVATE_BATCH × NUM_WORKERS` | **320** |
+| **TS REST** | 32 × WPP | `maxParallelJobs = ACTIVATE_BATCH × NUM_WORKERS` | **320** (event loop limits CPU to 1) |
+| **Python** | 32 × WPP | `max_concurrent_jobs = ACTIVATE_BATCH × NUM_WORKERS` | **320** (GIL limits CPU to 1) |
+
+**Why `ACTIVATE_BATCH × NUM_WORKERS`**: All SDKs now use the same formula — one execution slot
+per activated job. Java's execution thread pool is set to match its activation buffer so that
+I/O-bound handlers (e.g. 200ms HTTP calls) run concurrently at full capacity rather than
+queuing behind a smaller thread pool.
+
+**Java thread cap**: Unlike the other SDKs (which use async tasks, event loops, or green threads),
+Java's `numJobWorkerExecutionThreads` creates real OS threads — each consuming ~1MB stack memory.
+At WPP=50, uncapped `ACTIVATE_BATCH × NUM_WORKERS` = 1,600 threads on a 2-vCPU VM (3.2GB in
+stacks alone). The cap of `availableProcessors() × 100` limits this to 200 threads on 2-vCPU
+VMs, which is ample for I/O-bound handlers while preventing OOM/scheduler thrashing.
+
+> **Future dimension**: We plan to sweep the concurrent-handler / activation-batch dimension
+> separately in a later run to quantify the throughput impact of different concurrency caps
+> (e.g. WPP, 2×WPP, 16×WPP, 32×WPP) across SDKs and handler types.
+
+**Impact on I/O-bound (HTTP) handlers** (WPP=10, 200ms `sleep`/`await`):
+- All SDKs: 320 concurrent I/O waits × 5 completions/s = **1,600 jobs/s max**
+- TS: limited by event loop if CPU-bound work is mixed in
+
+**Impact on CPU-bound handlers** (WPP=10, 200ms busy-loop, 2 vCPU VM):
+- All SDKs: bottlenecked by 2 real cores → **~10 jobs/s** regardless of concurrency cap
+- TS (non-threaded): 1 event loop thread → **~5 jobs/s**
+
+The asymmetry primarily affects **CPU-bound workloads**, where the TS event loop serialises
+handlers while other SDKs parallelise across cores. For I/O-bound workloads all SDKs now
+have the same concurrency ceiling.
+
+A follow-up concurrency sweep (see note above) will quantify the effect of varying this cap.
+
+### Other Asymmetries
+
+| Asymmetry | Impact |
+|-----------|--------|
+| **Two TS SDKs** | REST modes use `@camunda8/orchestration-cluster-api`; gRPC modes use `@camunda8/sdk`. These are different packages with different internals, not just different transport options on the same client. |
+| **TS event loop vs Java thread pool** | CPU handlers block the TS event loop (1 handler at a time) but Java runs WPP in parallel. The `rest-threaded` mode closes this gap. |
+| **Python GIL** | CPU-bound threads don't help Python. I/O-bound async is efficient. Threading adds overhead for I/O workloads. |
+| **gRPC availability** | Only TS and Java support gRPC, so gRPC scenarios produce no data for Python and C#. |
+| **Backpressure management** | TS REST and C# have client-side adaptive backpressure. Java, TS gRPC, and Python do not. This may affect error rates under high load. |
+| **Completion semantics** | All SDKs fire-and-forget completions. All capture error types (root cause class + message) for post-hoc diagnosis. |
+
 ## Architecture
 
 ### Why Cloud VMs?
@@ -296,18 +412,33 @@ gsutil cp /opt/worker/result.json \
 
 ### Cost Estimate
 
-For a full 800-scenario run with ~5 min per scenario:
+Each scenario takes ~45 minutes end-to-end, dominated by provisioning and pre-creation:
+
+| Phase | Duration | Notes |
+|-------|----------|-------|
+| Broker provisioning | ~5 min | Skipped when retained from previous scenario |
+| Pre-create 150K instances | ~10-15 min | At concurrency 200 |
+| Worker VM provisioning | ~5-10 min | Create VMs, boot, install runtime, download package |
+| Benchmark execution | ≤5 min | 300s timeout |
+| Result collection + teardown | ~2-5 min | Upload results, delete worker VMs |
+
+With 8 lanes running in parallel, observed throughput is ~1.3 scenarios/lane/hour
+(128 scenarios in 12 hours). Extrapolating to a full 800-scenario run:
+
+- **Wall-clock time**: ~75 hours (100 scenarios/lane × 45 min)
+- **8 lanes** running in parallel, each with its own broker pool and worker VMs
 
 | Resource | Quantity | Duration | Cost/hr | Total |
 |----------|----------|----------|---------|-------|
-| Orchestrator | 1× e2-standard-4 | 10 hrs | $0.134 | $1.34 |
-| Broker VMs | 1-3× e2-standard-8 | 10 hrs | $0.268 | $2.68-$8.04 |
-| Worker VMs | avg 10× e2-standard-2 | 5 min each | $0.067 | ~$6.70 |
+| Orchestrator | 1× e2-standard-4 | 75 hrs | $0.134 | $10 |
+| Broker VMs | 8 pools × avg 2× e2-standard-8 | 75 hrs | $0.268 | ~$322 |
+| Worker VMs | avg ~17× e2-standard-2 per scenario | ~45 min each | $0.067 | ~$670 |
 | GCS | < 1 GB | — | — | < $0.01 |
-| **Total** | | | | **~$11-17** |
+| **Total** | | | | **~$1,000** |
 
-Running scenarios in parallel (e.g., 4 at a time with different broker pools) could reduce
-wall-clock time to ~2.5 hours at similar cost.
+The dominant cost is worker VMs — high-process-count scenarios (W=100, WPP=1 → 100 VMs)
+are disproportionately expensive. Reducing `MAX_TOTAL_WORKERS` or capping process count
+would significantly lower costs.
 
 ### Local Development Mode
 
@@ -369,17 +500,47 @@ key parameters controlling concurrency are:
 | TypeScript | Single-threaded (Node.js event loop) | Async I/O naturally multiplexes; CPU handlers block the event loop |
 | Python | `NUM_WORKERS` threads via `ThreadPoolExecutor` | GIL limits true CPU parallelism but allows I/O concurrency |
 | C# | `Task`-based async — thread pool sized by .NET runtime | Naturally concurrent for async handlers |
-| Java | `.numJobWorkerExecutionThreads(NUM_WORKERS)` | Explicitly set to match the desired worker count. Defaults to 1 if not set, which serializes all handler execution |
+| Java | `.numJobWorkerExecutionThreads(min(ACTIVATE_BATCH × NUM_WORKERS, CPUs × 100))` | Capped to avoid OS thread explosion on small VMs. On 2-vCPU: max 200 threads |
 
 The Java thread pool setting is critical: without it, a single execution thread processes
 handlers sequentially. With 200ms handler latency this limits throughput to ~5 jobs/s regardless
-of `NUM_WORKERS`. Setting it to `NUM_WORKERS` allows up to N handlers to execute in parallel.
+of `NUM_WORKERS`. Setting it to `ACTIVATE_BATCH × NUM_WORKERS` (with a CPU-based cap) allows
+I/O-bound handlers to run at full concurrency while preventing thread explosion at high WPP.
 
 ### Job Completion
 
 All workers complete jobs asynchronously (fire-and-forget with error callback) to avoid blocking
 handler threads. The Java worker uses `.send().whenComplete(...)` rather than `.send().join()`.
 Blocking completion was found to cause carrier-thread pinning and deadlock at high concurrency.
+
+### Error Counting
+
+Every worker tracks two error metrics:
+
+1. **Error count** (all SDKs): Each failed job completion increments a per-worker error counter.
+   The result JSON includes `totalErrors`, `perWorkerErrors[]`, and evenly distributed errors
+   indicate a systematic problem (e.g., inter-broker routing) rather than a single bad worker.
+
+2. **Error type aggregation** (all SDKs): Every worker buckets errors by their
+   root cause class and message. When a job handler or completion fails, an `errorKey()` function
+   walks the exception/cause chain to the root cause and builds a key of
+   `ClassName: message` (message truncated to 120 characters). A concurrent map accumulates
+   counts per distinct error key. The result JSON includes an `errorTypes` map sorted by count
+   descending:
+
+   ```json
+   {
+     "errorTypes": {
+       "StatusRuntimeException: RESOURCE_EXHAUSTED: ...": 2100,
+       "TimeoutException: deadline exceeded": 500
+     }
+   }
+   ```
+
+   This enables diagnosis of *what* is failing without per-invocation logging — critical for
+   understanding error patterns where streaming may show high error rates.
+
+   The top 5 error types are also logged to stdout at the end of the benchmark.
 
 ### Continuous Producer (Two-Phase Protocol)
 
@@ -514,6 +675,8 @@ Each scenario produces two levels of result data in GCS:
 | `perWorkerCompleted` | number[] | Completions per worker |
 | `perWorkerErrors` | number[] | Errors per worker |
 | `perWorkerThroughputs` | number[] | Throughput per worker |
+| `errorTypes` | object | Map of error key → count, sorted by count descending. Key format: `RootCauseClass: message` (truncated to 120 chars) |
+| `memoryUsage` | object | Client memory stats: `{ peakRssMb, avgRssMb, samples }` (TS/Python/C# use RSS; Java uses `peakHeapMb`/`avgHeapMb`) |
 
 **Scenario summary** (`results/scenario-summary.json`) — written by the orchestrator after
 collecting all per-process results. This is the primary file for analysis:

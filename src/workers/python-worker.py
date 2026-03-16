@@ -15,6 +15,7 @@ import asyncio
 import json
 import math
 import os
+import resource
 import sys
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -92,6 +93,63 @@ async def wait_for_go():
         await asyncio.sleep(0.01)
 
 
+# ─── Memory sampling ─────────────────────────────────────
+
+class MemorySampler:
+    def __init__(self):
+        self._samples = []
+        self._running = False
+        self._thread = None
+
+    def start(self):
+        self._running = True
+        self._samples.append(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        while self._running:
+            time.sleep(5)
+            if self._running:
+                self._samples.append(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+
+    def stop(self):
+        self._running = False
+        self._samples.append(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        # ru_maxrss is in KB on Linux, bytes on macOS
+        divisor = 1024 if sys.platform == "linux" else (1024 * 1024)
+        mbs = [s / divisor for s in self._samples]
+        peak = max(mbs) if mbs else 0
+        avg = sum(mbs) / len(mbs) if mbs else 0
+        return {
+            "peakRssMb": round(peak, 1),
+            "avgRssMb": round(avg, 1),
+            "samples": len(self._samples),
+        }
+
+
+# ─── Error type aggregation ───────────────────────────────
+
+error_types: dict = {}
+
+def error_key(exc: Exception) -> str:
+    """Extract a root-cause error key like 'ClassName: message'."""
+    cause = exc
+    while cause.__cause__ is not None:
+        cause = cause.__cause__
+    name = type(cause).__name__
+    msg = str(cause)
+    if len(msg) > 120:
+        msg = msg[:120]
+    return f"{name}: {msg}" if msg else name
+
+def record_error(worker_errors: list, exc: Exception):
+    min_idx = min(range(len(worker_errors)), key=lambda i: worker_errors[i])
+    worker_errors[min_idx] += 1
+    key = error_key(exc)
+    error_types[key] = error_types.get(key, 0) + 1
+
+
 # ─── REST worker (using published SDK) ───────────────────
 
 async def run_rest(http_sim_port: int):
@@ -123,24 +181,25 @@ async def run_rest(http_sim_port: int):
 
         async def handler(job):
             nonlocal done
-            # Simulate work
-            if HANDLER_TYPE == "cpu" and HANDLER_LATENCY_MS > 0:
-                cpu_work(HANDLER_LATENCY_MS)
-            elif HANDLER_TYPE == "http" and http_client:
-                try:
+            try:
+                # Simulate work
+                if HANDLER_TYPE == "cpu" and HANDLER_LATENCY_MS > 0:
+                    cpu_work(HANDLER_LATENCY_MS)
+                elif HANDLER_TYPE == "http" and http_client:
                     await http_client.get(f"http://127.0.0.1:{http_sim_port}/work")
-                except Exception:
-                    pass
 
-            # Round-robin: assign to worker with fewest completions
-            min_idx = min(range(NUM_WORKERS), key=lambda i: worker_completed[i])
-            worker_completed[min_idx] += 1
-            total = sum(worker_completed)
-            if total >= total_target:
-                done = True
+                # Round-robin: assign to worker with fewest completions
+                min_idx = min(range(NUM_WORKERS), key=lambda i: worker_completed[i])
+                worker_completed[min_idx] += 1
+                total = sum(worker_completed)
+                if total >= total_target:
+                    done = True
 
-            # Return dict to auto-complete with these variables
-            return {"done": True}
+                # Return dict to auto-complete with these variables
+                return {"done": True}
+            except Exception as e:
+                record_error(worker_errors, e)
+                raise
 
         worker = client.create_job_worker(
             config=config, callback=handler, auto_start=True,
@@ -194,23 +253,24 @@ async def run_rest_threaded(http_sim_port: int):
         # Sync handler — runs in ThreadPoolExecutor
         def handler(job):
             nonlocal done
-            # Simulate work
-            if HANDLER_TYPE == "cpu" and HANDLER_LATENCY_MS > 0:
-                cpu_work(HANDLER_LATENCY_MS)
-            elif HANDLER_TYPE == "http" and http_sim_port > 0:
-                try:
+            try:
+                # Simulate work
+                if HANDLER_TYPE == "cpu" and HANDLER_LATENCY_MS > 0:
+                    cpu_work(HANDLER_LATENCY_MS)
+                elif HANDLER_TYPE == "http" and http_sim_port > 0:
                     urllib.request.urlopen(f"http://127.0.0.1:{http_sim_port}/work")
-                except Exception:
-                    pass
 
-            # Round-robin: assign to worker with fewest completions
-            min_idx = min(range(NUM_WORKERS), key=lambda i: worker_completed[i])
-            worker_completed[min_idx] += 1
-            total = sum(worker_completed)
-            if total >= total_target:
-                done = True
+                # Round-robin: assign to worker with fewest completions
+                min_idx = min(range(NUM_WORKERS), key=lambda i: worker_completed[i])
+                worker_completed[min_idx] += 1
+                total = sum(worker_completed)
+                if total >= total_target:
+                    done = True
 
-            return {"done": True}
+                return {"done": True}
+            except Exception as e:
+                record_error(worker_errors, e)
+                raise
 
         worker = client.create_job_worker(
             config=config, callback=handler,
@@ -246,6 +306,9 @@ async def main():
 
     print("[python-worker] GO received, starting benchmark...", flush=True)
 
+    sampler = MemorySampler()
+    sampler.start()
+
     if SDK_MODE == "rest-threaded":
         worker_completed, worker_errors, wall_clock_s = await run_rest_threaded(http_sim_port)
     else:
@@ -259,6 +322,11 @@ async def main():
         c / wall_clock_s if wall_clock_s > 0 else 0 for c in worker_completed
     ]
 
+    # Sort errorTypes by count descending
+    sorted_error_types = dict(sorted(error_types.items(), key=lambda x: -x[1]))
+
+    memory_usage = sampler.stop()
+
     output = {
         "processId": PROCESS_ID,
         "sdkMode": SDK_MODE,
@@ -271,9 +339,15 @@ async def main():
         "perWorkerCompleted": worker_completed,
         "perWorkerErrors": worker_errors,
         "perWorkerThroughputs": per_worker_throughputs,
+        "errorTypes": sorted_error_types,
+        "memoryUsage": memory_usage,
     }
 
-    print(f"[python-worker] Done: {total_completed} completed, {total_errors} errors, {throughput:.1f} ops/s", flush=True)
+    error_type_count = len(sorted_error_types)
+    print(f"[python-worker] Done: {total_completed} completed, {total_errors} errors ({error_type_count} types), {throughput:.1f} ops/s", flush=True)
+    if error_type_count > 0:
+        for key, count in list(sorted_error_types.items())[:5]:
+            print(f"[python-worker]   {count}× {key}", flush=True)
 
     with open(RESULT_FILE, "w") as f:
         json.dump(output, f, indent=2)

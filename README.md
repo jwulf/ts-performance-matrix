@@ -365,14 +365,15 @@ Each scenario JSON contains:
 
 | Component | Spec | Cost/hr |
 |-----------|------|---------|
+| Orchestrator VM | e2-standard-4 (4 vCPU, 16GB) | ~$0.13 |
 | Broker VM | e2-standard-8 (8 vCPU, 32GB) | ~$0.27 |
 | Worker VM | e2-standard-2 (2 vCPU, 8GB) | ~$0.07 |
 | GCS | Negligible for coordination files | ~$0 |
 
-**Sequential run** (~800 scenarios × ~5 min): ~67 hours, ~$107  
-**4 lanes** (~800 scenarios): ~17 hours, ~$107 (same cost, faster wall-clock)  
-**8 lanes** (~800 scenarios): ~8.5 hours, ~$107  
-Worker VMs are ephemeral (created/destroyed per scenario), so cost scales with scenario count, not with parallelism. Lanes add broker VMs but reduce wall-clock time proportionally.
+Each scenario takes ~45 min end-to-end (VM provisioning, pre-create 150K instances, benchmark, teardown). Observed throughput is ~1.3 scenarios/lane/hour.
+
+**8 lanes** (~800 scenarios): ~75 hours wall-clock, ~$1,000
+Worker VMs are ephemeral (created/destroyed per scenario). The dominant cost is worker VMs — high-process-count scenarios (W=100, WPP=1 → 100 VMs) are disproportionately expensive.
 
 ## Project structure
 

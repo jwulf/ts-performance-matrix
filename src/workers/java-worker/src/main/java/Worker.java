@@ -44,6 +44,12 @@ public class Worker {
     static final String READY_FILE = env("READY_FILE", "");
     static final String GO_FILE = env("GO_FILE", "");
 
+    // Hard cap on execution threads: avoids spawning 1600 OS threads at WPP=50 on a 2-vCPU VM.
+    // 100× available processors is generous for I/O-bound handlers while preventing thread explosion.
+    static final int DESIRED_THREADS = ACTIVATE_BATCH * NUM_WORKERS;
+    static final int MAX_EXECUTION_THREADS = Math.min(DESIRED_THREADS,
+            Runtime.getRuntime().availableProcessors() * 100);
+
     static final ObjectMapper mapper = new ObjectMapper();
 
     // ─── Main ────────────────────────────────────────────────
@@ -66,6 +72,9 @@ public class Worker {
                     PROCESS_ID, SDK_MODE, HANDLER_TYPE, NUM_WORKERS);
             System.out.printf("[java-worker] target=%d/worker broker=%s%n",
                     TARGET_PER_WORKER, BROKER_REST_URL);
+            System.out.printf("[java-worker] executionThreads=%d (desired=%d, cap=%d×%d)%n",
+                    MAX_EXECUTION_THREADS, DESIRED_THREADS,
+                    Runtime.getRuntime().availableProcessors(), 100);
 
             // Signal ready (barrier protocol)
             writeReady();
@@ -73,25 +82,45 @@ public class Worker {
 
             System.out.println("[java-worker] GO received, starting benchmark...");
 
+            // Start memory sampling
+            var memSamples = new ArrayList<Long>();
+            var memSamplerRunning = new AtomicBoolean(true);
+            var memSampler = new Thread(() -> {
+                while (memSamplerRunning.get()) {
+                    var rt = Runtime.getRuntime();
+                    memSamples.add(rt.totalMemory() - rt.freeMemory());
+                    try { Thread.sleep(5000); } catch (InterruptedException e) { break; }
+                }
+                // Final sample
+                var rt = Runtime.getRuntime();
+                memSamples.add(rt.totalMemory() - rt.freeMemory());
+            }, "mem-sampler");
+            memSampler.setDaemon(true);
+            memSampler.start();
+
             int[] workerCompleted;
             int[] workerErrors;
             double wallClockS;
 
+            Map<String, Integer> errorTypeCounts;
             if ("grpc-streaming".equals(SDK_MODE)) {
                 var result = runGrpcStreaming();
                 workerCompleted = result.completed;
                 workerErrors = result.errors;
                 wallClockS = result.wallClockS;
+                errorTypeCounts = result.errorTypes;
             } else if ("grpc-polling".equals(SDK_MODE)) {
                 var result = runGrpcPolling();
                 workerCompleted = result.completed;
                 workerErrors = result.errors;
                 wallClockS = result.wallClockS;
+                errorTypeCounts = result.errorTypes;
             } else {
                 var result = runRest();
                 workerCompleted = result.completed;
                 workerErrors = result.errors;
                 wallClockS = result.wallClockS;
+                errorTypeCounts = result.errorTypes;
             }
 
             int totalCompleted = Arrays.stream(workerCompleted).sum();
@@ -99,6 +128,18 @@ public class Worker {
             double throughput = wallClockS > 0 ? totalCompleted / wallClockS : 0;
             double[] perWorkerThroughputs = Arrays.stream(workerCompleted)
                     .mapToDouble(c -> wallClockS > 0 ? c / wallClockS : 0).toArray();
+
+            // Stop memory sampler and compute stats
+            memSamplerRunning.set(false);
+            memSampler.interrupt();
+            memSampler.join(1000);
+            double peakHeapMb = 0, sumHeapMb = 0;
+            for (var s : memSamples) {
+                double mb = s / (1024.0 * 1024.0);
+                if (mb > peakHeapMb) peakHeapMb = mb;
+                sumHeapMb += mb;
+            }
+            double avgHeapMb = memSamples.isEmpty() ? 0 : sumHeapMb / memSamples.size();
 
             var output = mapper.createObjectNode();
             output.put("processId", PROCESS_ID);
@@ -112,6 +153,12 @@ public class Worker {
             output.set("perWorkerCompleted", intArrayToJson(workerCompleted));
             output.set("perWorkerErrors", intArrayToJson(workerErrors));
             output.set("perWorkerThroughputs", doubleArrayToJson(perWorkerThroughputs));
+            output.set("errorTypes", mapper.valueToTree(errorTypeCounts));
+            var memNode = mapper.createObjectNode();
+            memNode.put("peakHeapMb", Math.round(peakHeapMb * 10.0) / 10.0);
+            memNode.put("avgHeapMb", Math.round(avgHeapMb * 10.0) / 10.0);
+            memNode.put("samples", memSamples.size());
+            output.set("memoryUsage", memNode);
 
             System.out.printf("[java-worker] Done: %d completed, %d errors, %.1f ops/s%n",
                     totalCompleted, totalErrors, throughput);
@@ -129,19 +176,28 @@ public class Worker {
 
     // ─── REST mode ───────────────────────────────────────────
 
-    record RestResult(int[] completed, int[] errors, double wallClockS) {}
+    record RestResult(int[] completed, int[] errors, double wallClockS, Map<String, Integer> errorTypes) {}
 
     static RestResult runRest() throws Exception {
         var client = CamundaClient.newClientBuilder()
                 .restAddress(URI.create(BROKER_REST_URL))
                 .preferRestOverGrpc(true)
-                .numJobWorkerExecutionThreads(NUM_WORKERS)
+                .numJobWorkerExecutionThreads(MAX_EXECUTION_THREADS)
                 .build();
         try {
             return runWorker(client, false);
         } finally {
             client.close();
         }
+    }
+
+    static String errorKey(Throwable error) {
+        Throwable cause = error;
+        while (cause.getCause() != null && cause.getCause() != cause) cause = cause.getCause();
+        String name = cause.getClass().getSimpleName();
+        String msg = cause.getMessage();
+        if (msg != null && msg.length() > 120) msg = msg.substring(0, 120);
+        return msg != null ? name + ": " + msg : name;
     }
 
     // ─── gRPC streaming mode ─────────────────────────────────
@@ -151,7 +207,7 @@ public class Worker {
         var client = CamundaClient.newClientBuilder()
                 .grpcAddress(URI.create(grpcUri))
                 .preferRestOverGrpc(false)
-                .numJobWorkerExecutionThreads(NUM_WORKERS)
+                .numJobWorkerExecutionThreads(MAX_EXECUTION_THREADS)
                 .build();
         try {
             return runWorker(client, true);
@@ -167,7 +223,7 @@ public class Worker {
         var client = CamundaClient.newClientBuilder()
                 .grpcAddress(URI.create(grpcUri))
                 .preferRestOverGrpc(false)
-                .numJobWorkerExecutionThreads(NUM_WORKERS)
+                .numJobWorkerExecutionThreads(MAX_EXECUTION_THREADS)
                 .build();
         try {
             return runWorker(client, false);
@@ -182,6 +238,7 @@ public class Worker {
         int totalTarget = NUM_WORKERS * TARGET_PER_WORKER;
         var workerCompleted = new AtomicIntegerArray(NUM_WORKERS);
         var workerErrors = new AtomicIntegerArray(NUM_WORKERS);
+        var errorTypes = new ConcurrentHashMap<String, AtomicInteger>();
         var done = new AtomicBoolean(false);
         // Track handler invocations for diagnostics
         var handlerInvocations = new AtomicInteger(0);
@@ -213,6 +270,7 @@ public class Worker {
                             } else {
                                 int minIdx = minIndex(workerErrors);
                                 workerErrors.incrementAndGet(minIdx);
+                                errorTypes.computeIfAbsent(errorKey(error), k -> new AtomicInteger()).incrementAndGet();
                             }
                         });
                 })
@@ -246,7 +304,11 @@ public class Worker {
             completed[i] = workerCompleted.get(i);
             errors[i] = workerErrors.get(i);
         }
-        return new RestResult(completed, errors, wallClockS);
+        var errorTypeCounts = new LinkedHashMap<String, Integer>();
+        errorTypes.entrySet().stream()
+                .sorted((a, b) -> b.getValue().get() - a.getValue().get())
+                .forEach(e -> errorTypeCounts.put(e.getKey(), e.getValue().get()));
+        return new RestResult(completed, errors, wallClockS, errorTypeCounts);
     }
 
     // ─── CPU work simulation ─────────────────────────────────

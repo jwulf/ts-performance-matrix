@@ -24,7 +24,8 @@
 
 import * as fs from 'node:fs';
 import * as http from 'node:http';
-import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
+import * as os from 'node:os';
+import { Worker, isMainThread, parentPort } from 'node:worker_threads';
 
 // ─── Config ──────────────────────────────────────────────
 
@@ -49,6 +50,30 @@ interface WorkerMetrics {
   workerId: string;
   completed: number;
   errors: number;
+}
+
+// ─── Error type aggregation ──────────────────────────────
+
+const errorTypes: Record<string, number> = {};
+
+function errorKey(err: unknown): string {
+  if (err instanceof Error) {
+    const name = err.constructor.name || 'Error';
+    let msg = err.message || '';
+    if (msg.length > 120) msg = msg.slice(0, 120);
+    return msg ? `${name}: ${msg}` : name;
+  }
+  const s = String(err);
+  return s.length > 120 ? s.slice(0, 120) : s;
+}
+
+function recordError(workerMetrics: WorkerMetrics[], err: unknown) {
+  const minWorker = workerMetrics.reduce((a, b) =>
+    a.errors < b.errors ? a : b
+  );
+  minWorker.errors++;
+  const key = errorKey(err);
+  errorTypes[key] = (errorTypes[key] || 0) + 1;
 }
 
 // ─── HTTP sim server ─────────────────────────────────────
@@ -84,31 +109,103 @@ function cpuWork(durationMs: number) {
 // ─── CPU work on worker_threads pool ─────────────────
 
 // Worker thread entry point: when this file is loaded as a worker thread,
-// it runs cpuWork and posts the result back.
+// it listens for { durationMs } messages, runs cpuWork, and posts 'done' back.
+// The thread stays alive for reuse — no per-job startup cost.
 if (!isMainThread && parentPort) {
-  const { durationMs } = workerData as { durationMs: number };
-  cpuWork(durationMs);
-  parentPort.postMessage('done');
-  // Don't fall through to main() — this is a short-lived thread
+  const port = parentPort;
+  port.on('message', (msg: { durationMs: number }) => {
+    cpuWork(msg.durationMs);
+    port.postMessage('done');
+  });
 }
 
-// Thread pool for CPU-bound work — each call spawns a worker thread
+// Fixed-size thread pool for CPU-bound work. Threads are created lazily and
+// reused across handler invocations. Pool size is capped at the number of CPU
+// cores (the VM has 2 vCPUs, so more threads just context-switch without benefit).
+
+const THREAD_POOL_SIZE = os.cpus().length;
+
+interface PooledWorker {
+  worker: Worker;
+  busy: boolean;
+}
+
+const threadPool: PooledWorker[] = [];
+const waitQueue: Array<{ durationMs: number; resolve: () => void; reject: (err: Error) => void }> = [];
+
+function getOrCreatePoolWorker(): PooledWorker | null {
+  // Find an idle worker
+  const idle = threadPool.find(pw => !pw.busy);
+  if (idle) return idle;
+
+  // Create a new worker if pool isn't full
+  if (threadPool.length < THREAD_POOL_SIZE) {
+    const w = new Worker(__filename, { workerData: {} });
+    const pw: PooledWorker = { worker: w, busy: false };
+    threadPool.push(pw);
+    return pw;
+  }
+
+  // Pool exhausted — caller must queue
+  return null;
+}
 
 function cpuWorkThreaded(durationMs: number): Promise<void> {
   if (durationMs <= 0) return Promise.resolve();
+
   return new Promise((resolve, reject) => {
-    const worker = new Worker(__filename, {
-      workerData: { durationMs },
-    });
-    worker.on('message', () => {
-      worker.terminate();
-      resolve();
-    });
-    worker.on('error', (err) => {
-      worker.terminate();
-      reject(err);
-    });
+    const pw = getOrCreatePoolWorker();
+    if (!pw) {
+      // Queue until a thread becomes available
+      waitQueue.push({ durationMs, resolve, reject });
+      return;
+    }
+
+    dispatchToWorker(pw, durationMs, resolve, reject);
   });
+}
+
+function dispatchToWorker(
+  pw: PooledWorker,
+  durationMs: number,
+  resolve: () => void,
+  reject: (err: Error) => void,
+) {
+  pw.busy = true;
+
+  const onMessage = () => {
+    cleanup();
+    pw.busy = false;
+    resolve();
+    drainQueue();
+  };
+
+  const onError = (err: Error) => {
+    cleanup();
+    // Replace dead worker
+    const idx = threadPool.indexOf(pw);
+    if (idx !== -1) threadPool.splice(idx, 1);
+    reject(err);
+    drainQueue();
+  };
+
+  function cleanup() {
+    pw.worker.off('message', onMessage);
+    pw.worker.off('error', onError);
+  }
+
+  pw.worker.on('message', onMessage);
+  pw.worker.on('error', onError);
+  pw.worker.postMessage({ durationMs });
+}
+
+function drainQueue() {
+  while (waitQueue.length > 0) {
+    const pw = getOrCreatePoolWorker();
+    if (!pw) break;
+    const item = waitQueue.shift()!;
+    dispatchToWorker(pw, item.durationMs, item.resolve, item.reject);
+  }
 }
 
 // ─── Barrier protocol (local mode) ──────────────────────
@@ -163,23 +260,28 @@ async function runRestBalanced(httpSimPort: number): Promise<{ metrics: WorkerMe
     autoStart: true,
     validateSchemas: false,
     jobHandler: async (job) => {
-      // Simulate work
-      if (HANDLER_TYPE === 'cpu' && HANDLER_LATENCY_MS > 0) {
-        cpuWork(HANDLER_LATENCY_MS);
-      } else if (HANDLER_TYPE === 'http' && httpSimPort > 0) {
-        await fetch(`http://127.0.0.1:${httpSimPort}/work`);
+      try {
+        // Simulate work
+        if (HANDLER_TYPE === 'cpu' && HANDLER_LATENCY_MS > 0) {
+          cpuWork(HANDLER_LATENCY_MS);
+        } else if (HANDLER_TYPE === 'http' && httpSimPort > 0) {
+          await fetch(`http://127.0.0.1:${httpSimPort}/work`);
+        }
+
+        // Assign to worker with fewest completions (round-robin fairness)
+        const minWorker = workerMetrics.reduce((a, b) =>
+          a.completed < b.completed ? a : b
+        );
+        minWorker.completed++;
+
+        const totalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
+        if (totalCompleted >= totalTarget) done = true;
+
+        return job.complete({ variables: { done: true } });
+      } catch (err) {
+        recordError(workerMetrics, err);
+        throw err;
       }
-
-      // Assign to worker with fewest completions (round-robin fairness)
-      const minWorker = workerMetrics.reduce((a, b) =>
-        a.completed < b.completed ? a : b
-      );
-      minWorker.completed++;
-
-      const totalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
-      if (totalCompleted >= totalTarget) done = true;
-
-      return job.complete({ variables: { done: true } });
     },
   });
 
@@ -228,22 +330,27 @@ async function runRestThreaded(httpSimPort: number): Promise<{ metrics: WorkerMe
     autoStart: true,
     validateSchemas: false,
     jobHandler: async (job) => {
-      // Offload CPU work to a worker thread — keeps event loop free for polling
-      if (HANDLER_TYPE === 'cpu' && HANDLER_LATENCY_MS > 0) {
-        await cpuWorkThreaded(HANDLER_LATENCY_MS);
-      } else if (HANDLER_TYPE === 'http' && httpSimPort > 0) {
-        await fetch(`http://127.0.0.1:${httpSimPort}/work`);
+      try {
+        // Offload CPU work to a worker thread — keeps event loop free for polling
+        if (HANDLER_TYPE === 'cpu' && HANDLER_LATENCY_MS > 0) {
+          await cpuWorkThreaded(HANDLER_LATENCY_MS);
+        } else if (HANDLER_TYPE === 'http' && httpSimPort > 0) {
+          await fetch(`http://127.0.0.1:${httpSimPort}/work`);
+        }
+
+        const minWorker = workerMetrics.reduce((a, b) =>
+          a.completed < b.completed ? a : b
+        );
+        minWorker.completed++;
+
+        const totalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
+        if (totalCompleted >= totalTarget) done = true;
+
+        return job.complete({ variables: { done: true } });
+      } catch (err) {
+        recordError(workerMetrics, err);
+        throw err;
       }
-
-      const minWorker = workerMetrics.reduce((a, b) =>
-        a.completed < b.completed ? a : b
-      );
-      minWorker.completed++;
-
-      const totalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
-      if (totalCompleted >= totalTarget) done = true;
-
-      return job.complete({ variables: { done: true } });
     },
   });
 
@@ -287,22 +394,27 @@ async function runGrpcPoll(httpSimPort: number): Promise<{ metrics: WorkerMetric
   const worker = zeebe.createWorker({
     taskType: 'test-job',
     taskHandler: async (job) => {
-      if (HANDLER_TYPE === 'cpu' && HANDLER_LATENCY_MS > 0) {
-        cpuWork(HANDLER_LATENCY_MS);
-      } else if (HANDLER_TYPE === 'http' && httpSimPort > 0) {
-        await fetch(`http://127.0.0.1:${httpSimPort}/work`);
+      try {
+        if (HANDLER_TYPE === 'cpu' && HANDLER_LATENCY_MS > 0) {
+          cpuWork(HANDLER_LATENCY_MS);
+        } else if (HANDLER_TYPE === 'http' && httpSimPort > 0) {
+          await fetch(`http://127.0.0.1:${httpSimPort}/work`);
+        }
+
+        // Round-robin assignment
+        const minWorker = workerMetrics.reduce((a, b) =>
+          a.completed < b.completed ? a : b
+        );
+        minWorker.completed++;
+
+        const totalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
+        if (totalCompleted >= totalTarget) done = true;
+
+        return job.complete({});
+      } catch (err) {
+        recordError(workerMetrics, err);
+        throw err;
       }
-
-      // Round-robin assignment
-      const minWorker = workerMetrics.reduce((a, b) =>
-        a.completed < b.completed ? a : b
-      );
-      minWorker.completed++;
-
-      const totalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
-      if (totalCompleted >= totalTarget) done = true;
-
-      return job.complete({});
     },
     maxJobsToActivate: ACTIVATE_BATCH * NUM_WORKERS,
     timeout: 30_000,
@@ -349,22 +461,27 @@ async function runGrpcStream(httpSimPort: number): Promise<{ metrics: WorkerMetr
   const worker = await zeebe.streamJobs({
     type: 'test-job',
     taskHandler: async (job) => {
-      if (HANDLER_TYPE === 'cpu' && HANDLER_LATENCY_MS > 0) {
-        cpuWork(HANDLER_LATENCY_MS);
-      } else if (HANDLER_TYPE === 'http' && httpSimPort > 0) {
-        await fetch(`http://127.0.0.1:${httpSimPort}/work`);
+      try {
+        if (HANDLER_TYPE === 'cpu' && HANDLER_LATENCY_MS > 0) {
+          cpuWork(HANDLER_LATENCY_MS);
+        } else if (HANDLER_TYPE === 'http' && httpSimPort > 0) {
+          await fetch(`http://127.0.0.1:${httpSimPort}/work`);
+        }
+
+        // Round-robin assignment
+        const minWorker = workerMetrics.reduce((a, b) =>
+          a.completed < b.completed ? a : b
+        );
+        minWorker.completed++;
+
+        const totalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
+        if (totalCompleted >= totalTarget) done = true;
+
+        return job.complete({});
+      } catch (err) {
+        recordError(workerMetrics, err);
+        throw err;
       }
-
-      // Round-robin assignment
-      const minWorker = workerMetrics.reduce((a, b) =>
-        a.completed < b.completed ? a : b
-      );
-      minWorker.completed++;
-
-      const totalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
-      if (totalCompleted >= totalTarget) done = true;
-
-      return job.complete({});
     },
     pollMaxJobsToActivate: ACTIVATE_BATCH * NUM_WORKERS,
     timeout: 30_000,
@@ -384,6 +501,28 @@ async function runGrpcStream(httpSimPort: number): Promise<{ metrics: WorkerMetr
   return { metrics: workerMetrics, wallClockS };
 }
 
+// ─── Memory sampling ─────────────────────────────────────
+
+const memorySamples: number[] = [];
+let memorySamplerInterval: ReturnType<typeof setInterval> | undefined;
+
+function startMemorySampler() {
+  // Sample immediately, then every 5 seconds
+  memorySamples.push(process.memoryUsage.rss());
+  memorySamplerInterval = setInterval(() => {
+    memorySamples.push(process.memoryUsage.rss());
+  }, 5_000);
+}
+
+function stopMemorySampler(): { peakRssMb: number; avgRssMb: number; samples: number } {
+  if (memorySamplerInterval) clearInterval(memorySamplerInterval);
+  // Take a final sample
+  memorySamples.push(process.memoryUsage.rss());
+  const peakRssMb = Math.max(...memorySamples) / (1024 * 1024);
+  const avgRssMb = memorySamples.reduce((a, b) => a + b, 0) / memorySamples.length / (1024 * 1024);
+  return { peakRssMb: Math.round(peakRssMb * 10) / 10, avgRssMb: Math.round(avgRssMb * 10) / 10, samples: memorySamples.length };
+}
+
 // ─── Main ────────────────────────────────────────────────
 
 async function main() {
@@ -401,6 +540,8 @@ async function main() {
 
   console.log(`[worker-process] GO received, starting benchmark...`);
 
+  startMemorySampler();
+
   let result: { metrics: WorkerMetrics[]; wallClockS: number };
 
   if (SDK_MODE === 'grpc-streaming') {
@@ -415,10 +556,17 @@ async function main() {
 
   if (httpSimServer) httpSimServer.close();
 
+  const memoryUsage = stopMemorySampler();
+
   // Compute aggregates
   const totalCompleted = result.metrics.reduce((s, w) => s + w.completed, 0);
   const totalErrors = result.metrics.reduce((s, w) => s + w.errors, 0);
   const throughput = result.wallClockS > 0 ? totalCompleted / result.wallClockS : 0;
+
+  // Sort errorTypes by count descending
+  const sortedErrorTypes = Object.fromEntries(
+    Object.entries(errorTypes).sort(([, a], [, b]) => b - a)
+  );
 
   const output = {
     processId: PROCESS_ID,
@@ -434,9 +582,18 @@ async function main() {
     perWorkerThroughputs: result.metrics.map((w) =>
       result.wallClockS > 0 ? w.completed / result.wallClockS : 0
     ),
+    errorTypes: sortedErrorTypes,
+    memoryUsage,
   };
 
-  console.log(`[worker-process] Done: ${totalCompleted} completed, ${totalErrors} errors, ${throughput.toFixed(1)} ops/s`);
+  const errorTypeCount = Object.keys(sortedErrorTypes).length;
+  console.log(`[worker-process] Done: ${totalCompleted} completed, ${totalErrors} errors (${errorTypeCount} types), ${throughput.toFixed(1)} ops/s`);
+  if (errorTypeCount > 0) {
+    const top = Object.entries(sortedErrorTypes).slice(0, 5);
+    for (const [key, count] of top) {
+      console.log(`[worker-process]   ${count}× ${key}`);
+    }
+  }
 
   // Write result
   fs.writeFileSync(RESULT_FILE, JSON.stringify(output, null, 2));
