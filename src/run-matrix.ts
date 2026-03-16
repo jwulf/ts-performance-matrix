@@ -405,13 +405,15 @@ async function runLocal(): Promise<void> {
         continue;
       }
 
-      console.log(`\n${progress} Running: ${scenario.id}`);
+      const brokerCount = scenario.cluster === '3broker' ? 3 : 1;
+      console.log(`\n${progress} Beginning scenario ${scenario.sdkLanguage} - ${scenario.sdkMode} - ${brokerCount}-broker - W: ${scenario.topology.totalWorkers} - P: ${scenario.topology.processes}`);
       const result = await runScenarioLocal(scenario, {
         doRestart: needsRestart,
         preCreateCount,
         targetPerWorker,
         scenarioTimeout,
       });
+      console.log(`${progress} Finished scenario ${scenario.sdkLanguage} - ${scenario.sdkMode} - ${brokerCount}-broker - W: ${scenario.topology.totalWorkers} - P: ${scenario.topology.processes} => ${result.status}, ${result.aggregateThroughput.toFixed(1)}/s`);
 
       needsRestart = true; // restart between scenarios for clean state
       results.push(result);
@@ -613,13 +615,16 @@ async function runGcp(): Promise<void> {
         }
         needsReset = true;
 
-        console.log(`\n${progress}${laneTag} Running: ${scenario.id}`);
+        const brokerCount = cluster === '3broker' ? 3 : 1;
+        const { sdkLanguage: lang, sdkMode: mode_, topology: { totalWorkers: W, processes: P } } = scenario;
+        console.log(`\n${progress}${laneTag} Beginning scenario ${lang} - ${mode_} - ${brokerCount}-broker - W: ${W} - P: ${P} on lane ${laneIndex}`);
         const result = await runScenarioGcp(scenario, brokerPool, {
           ...laneGcpOpts,
           targetPerWorker,
           scenarioTimeout,
           preCreateCount,
         });
+        console.log(`${progress}${laneTag} Finished scenario ${lang} - ${mode_} - ${brokerCount}-broker - W: ${W} - P: ${P} on lane ${laneIndex} => ${result.status}, ${result.aggregateThroughput.toFixed(1)}/s`);
         laneResults.push(result);
         saveResult(result, mode, runId);
         if (currentMetadata) currentMetadata.scenariosCompleted = allResults.length + laneResults.length;
