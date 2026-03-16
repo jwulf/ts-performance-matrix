@@ -314,7 +314,7 @@ MATRIX FILTERS (comma-separated)
 SCENARIO PARAMETERS
   --target 10000        Target completions per worker (default: 10000)
   --timeout 300         Scenario timeout in seconds (default: 300)
-  --precreate 50000     Pre-create instance count (default: 50000)
+  --precreate 100000    Pre-create instance count (default: 100000)
 
 CONTROL
   --lanes <n>           Parallel lanes, GCP only (default: 1)
@@ -327,12 +327,13 @@ CONTROL
 
 1. **Broker restart** — clean broker(s) with H2 in-memory DB, no auth, Prometheus metrics enabled
 2. **Deploy** — upload `test-job-process.bpmn` (Start → ServiceTask `test-job` → End)
-3. **Pre-create** — create 50,000 process instances with 10KB payload (backpressure-managed)
+3. **Pre-create** — create 100,000 process instances with 10KB payload as an initial buffer
 4. **Spawn workers** — P processes, each running WPP workers sharing one SDK client
 5. **Barrier** — all processes signal READY, coordinator sends GO simultaneously
-6. **Execute** — each worker completes `target` jobs. Handler is either CPU-bound (sync return) or HTTP-simulated (200ms async delay)
-7. **Collect** — per-worker throughput, completions, errors. Compute aggregate throughput, Jain's fairness index, server-side Prometheus deltas
-8. **Report** — JSON result per scenario + markdown summary grouped by total workers
+6. **Continuous producer** — alongside the workers, a continuous producer keeps creating new process instances (concurrency 50) to prevent job starvation at high worker counts. Stops when the workers finish. Stats (created, errors, rate) are collected separately.
+7. **Execute** — each worker completes `target` jobs. Handler is either CPU-bound (sync return) or HTTP-simulated (200ms async delay). Server resource usage (CPU, memory, threads) is sampled via Prometheus gauges every 30s during execution.
+8. **Collect** — per-worker throughput, completions, errors. Compute aggregate throughput, Jain's fairness index, server-side Prometheus deltas, server resource usage (avg/peak), and continuous producer stats.
+9. **Report** — JSON result per scenario + markdown summary grouped by total workers
 
 ## Output
 
@@ -351,6 +352,8 @@ Each scenario JSON contains:
 - Aggregate metrics (throughput, errors, wall clock, Jain fairness)
 - Per-process breakdown (completions, throughput, per-worker arrays)
 - Server-side Prometheus metrics (received/dropped requests, job activation latency, PI execution time)
+- Server resource usage — JVM gauge sampling (CPU avg/peak, memory avg/peak MB, live threads avg/peak)
+- Continuous producer stats (created count, errors, duration, creation rate)
 
 ## Cost estimate (GCP)
 

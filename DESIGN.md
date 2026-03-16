@@ -85,6 +85,13 @@ For example, W=10 with WPP=25 is impossible.
 | 50 | 10 | 5 | |
 | 50 | 25 | 2 | |
 | 50 | 50 | 1 | Full sharing |
+| 100 | 1 | 100 | Full isolation |
+| 100 | 2 | 50 | |
+| 100 | 5 | 20 | |
+| 100 | 10 | 10 | |
+| 100 | 25 | 4 | |
+| 100 | 50 | 2 | |
+| 100 | 100 | 1 | Full sharing |
 
 That's **20 topology configurations** × 8 language-mode combos × 2 handlers × 2 clusters = **640 scenarios**.
 
@@ -169,14 +176,15 @@ For each scenario (W, WPP, mode, handler, cluster):
    - Deploy test BPMN to the broker via REST API
 
 3. PRE-CREATE INSTANCES
-   - Create W × TARGET_PER_WORKER process instances
-   - Use BALANCED backpressure profile for rate limiting
+   - Create 100,000 process instances as an initial buffer
+   - Concurrency-limited (50 inflight) for rate control
 
 4. PROVISION WORKER VMS
    - Create P = W/WPP worker VMs
+   - Leader VM (worker-0) also runs the continuous producer as a background process
    - Each VM startup script:
-     a. Install Node.js + tsx
-     b. Clone/download worker script
+     a. Install language runtime (Node.js, Python, .NET, JDK)
+     b. Download worker package from GCS
      c. Set environment: SDK_MODE, HANDLER_TYPE, NUM_WORKERS=WPP, BROKER_URL
      d. Write "ready" flag to GCS
    - Wait for all P VMs to report ready
@@ -184,10 +192,15 @@ For each scenario (W, WPP, mode, handler, cluster):
 5. START BENCHMARK
    - Write "go" flag to GCS
    - All worker VMs begin simultaneously (barrier protocol via GCS)
+   - Leader VM signals continuous producer to start creating new instances
+   - Server resource usage (CPU, memory, threads) is sampled via Prometheus
+     gauges every 30 seconds during execution
 
 6. COLLECT RESULTS
    - Each worker VM writes result JSON to GCS on completion
+   - Leader VM stops the continuous producer and uploads producer stats
    - Orchestrator polls for P result files (or timeout)
+   - Orchestrator reads continuous producer stats from a separate GCS path
 
 7. TEARDOWN
    - Delete worker VMs
@@ -216,6 +229,7 @@ gs://perf-matrix-{run-id}/
         worker-0.json         # Written by each worker VM on completion
         worker-1.json
         ...
+      producer-stats.json     # Continuous producer stats (separate from results/)
       broker-metrics-before.json
       broker-metrics-after.json
 ```
@@ -224,10 +238,13 @@ gs://perf-matrix-{run-id}/
 
 Each worker VM receives a startup script that:
 
-1. Installs Node.js 22 and tsx
-2. Downloads the worker script from GCS
+1. Installs the appropriate language runtime (Node.js, Python, .NET, or JDK)
+2. Downloads the worker package from GCS
 3. Configures environment variables (broker URL, SDK mode, etc.)
-4. Runs the worker, writing results back to GCS
+4. **Leader only (worker-0):** Launches the producer as a background process, waits for pre-creation
+   to complete, then starts the worker. After the worker finishes, signals the producer to stop and
+   uploads producer stats to GCS.
+5. Runs the worker, writing results back to GCS
 
 ```bash
 #!/bin/bash
@@ -329,7 +346,7 @@ key parameters controlling concurrency are:
 | Parameter | Value | Description |
 |---|---|---|
 | `maxJobsActive` | `ACTIVATE_BATCH × NUM_WORKERS` (default: 32 × W/P) | Max jobs buffered locally before pausing activation |
-| `pollInterval` | 100ms | How often the worker polls for new jobs (REST/gRPC-polling modes) |
+| `pollIntervalMs` | 100ms | How often the worker polls for new jobs (REST/gRPC-polling modes) |
 | `timeout` | 30s | Job lock timeout — how long a job is reserved before the broker reclaims it |
 | `streamEnabled` | `true` for gRPC-streaming, `false` otherwise | Whether to use the gRPC job push stream |
 
@@ -351,6 +368,53 @@ of `NUM_WORKERS`. Setting it to `NUM_WORKERS` allows up to N handlers to execute
 All workers complete jobs asynchronously (fire-and-forget with error callback) to avoid blocking
 handler threads. The Java worker uses `.send().whenComplete(...)` rather than `.send().join()`.
 Blocking completion was found to cause carrier-thread pinning and deadlock at high concurrency.
+
+### Continuous Producer (Two-Phase Protocol)
+
+Early benchmarks revealed a **producer starvation problem**: with a fixed pre-created pool of
+50,000 instances and 100 workers each completing ~10,000 jobs, fast scenarios would drain the
+entire pool. Observed throughput would plateau at ~164/s — not a broker limit, but simply
+50,000 / ~305s ≈ 164/s.
+
+To eliminate this artifact, the system uses a **two-phase producer protocol**:
+
+1. **Phase 1 — Pre-create buffer:** Before workers start, create 100,000 process instances as an
+   initial buffer. This ensures workers have jobs available immediately at startup.
+
+2. **Phase 2 — Continuous production:** Once the GO signal fires, a background producer
+   continuously creates new instances (concurrency 50) until the workers finish and a STOP signal
+   is written.
+
+The protocol uses file-based coordination (GCS files on GCP, local filesystem in local mode):
+
+| Signal | Written by | Purpose |
+|--------|-----------|---------|
+| `READY_FILE` | Producer | Pre-creation complete, buffer is ready |
+| `GO_FILE` | Orchestrator | Workers have started, begin continuous creation |
+| `STOP_FILE` | Worker process | Workers finished, stop producing |
+| `PRODUCER_STATS_FILE` | Producer | Final stats: `{created, errors, durationS, rate}` |
+
+All four SDK producers (TypeScript, Java, Python, C#) implement this protocol identically.
+On GCP, the producer runs as a background process on the leader VM (worker-0). In local mode,
+it runs as an in-process async loop.
+
+Producer stats are stored at a **separate GCS path** (`producer-stats.json`) rather than inside
+`results/` to avoid contaminating the `gcsWaitForFiles` file count used for worker result polling.
+
+### Server Resource Monitoring
+
+During each scenario, the orchestrator samples JVM gauges from the broker's Prometheus endpoint
+every 30 seconds. The sampled metrics are:
+
+| Metric | Description |
+|--------|-------------|
+| `process_cpu_usage` | Process CPU usage (0.0–1.0) |
+| `system_cpu_usage` | System CPU usage (0.0–1.0) |
+| `jvm_memory_used_bytes` | JVM heap + non-heap memory (summed, reported in MB) |
+| `jvm_threads_live_threads` | Live JVM threads (summed across brokers) |
+
+Results include both **average** and **peak** values across all samples, enabling identification
+of CPU saturation, memory pressure, or thread exhaustion during high-concurrency scenarios.
 
 
   // Configuration
@@ -383,9 +447,37 @@ Blocking completion was found to cause carrier-thread pinning and deadlock at hi
   serverMetrics: {
     receivedRequests: number;
     droppedRequests: number;
-    jobActivationAvgMs: number;
-    jobLifetimeAvgMs: number;
+    deferredAppends: number;
+    jobsPushed: number;
+    jobsPushFailed: number;
+    recordsProcessed: number;
+    backpressureLimit: number;
+    backpressureInflight: number;
+    jobActivationAvgMs: number | null;
+    jobLifetimeAvgMs: number | null;
+    piExecutionAvgMs: number | null;
   };
+
+  // Server resource usage (gauge sampling during execution)
+  serverResourceUsage: {
+    samples: number;
+    cpuAvg: number;            // process_cpu_usage avg (0.0–1.0)
+    cpuPeak: number;
+    systemCpuAvg: number;      // system_cpu_usage avg (0.0–1.0)
+    systemCpuPeak: number;
+    memoryUsedAvgMb: number;   // jvm_memory_used_bytes total (MB)
+    memoryUsedPeakMb: number;
+    liveThreadsAvg: number;    // jvm_threads_live_threads total
+    liveThreadsPeak: number;
+  } | null;
+
+  // Continuous producer stats (null if not enabled)
+  continuousProducer: {
+    created: number;
+    errors: number;
+    durationS: number;
+    rate: number;
+  } | null;
 }
 ```
 
