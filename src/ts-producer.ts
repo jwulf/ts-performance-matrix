@@ -23,7 +23,7 @@ const BROKER_REST_URL = process.env.BROKER_REST_URL || 'http://localhost:8080';
 const BPMN_PATH = process.env.BPMN_PATH || '';
 const PRECREATE_COUNT = parseInt(process.env.PRECREATE_COUNT || '0', 10);
 const PAYLOAD_SIZE_KB = parseInt(process.env.PAYLOAD_SIZE_KB || '10', 10);
-const CONCURRENCY = 50;
+const CONCURRENCY = 200;
 const CONTINUOUS = process.env.CONTINUOUS === '1';
 const READY_FILE = process.env.READY_FILE || '';
 const GO_FILE = process.env.GO_FILE || '';

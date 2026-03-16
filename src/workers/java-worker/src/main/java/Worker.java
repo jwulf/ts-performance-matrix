@@ -325,7 +325,7 @@ public class Worker {
         var bpmnPath = env("BPMN_PATH", "");
         var precreateCount = envInt("PRECREATE_COUNT", 0);
         var payloadSizeKb = envInt("PAYLOAD_SIZE_KB", 10);
-        var concurrency = 50;
+        var concurrency = 200;
         var continuous = "1".equals(env("CONTINUOUS", "0"));
         var readyFile = env("READY_FILE", "");
         var goFile = env("GO_FILE", "");

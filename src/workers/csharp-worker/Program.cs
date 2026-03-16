@@ -275,7 +275,7 @@ async Task RunProducer()
     var bpmnPath = Env("BPMN_PATH", "");
     var precreateCount = EnvInt("PRECREATE_COUNT", 0);
     var payloadSizeKb = EnvInt("PAYLOAD_SIZE_KB", 10);
-    var concurrency = 50;
+    var concurrency = 200;
     var continuous = Env("CONTINUOUS", "0") == "1";
     var readyFile = Env("READY_FILE", "");
     var goFile = Env("GO_FILE", "");

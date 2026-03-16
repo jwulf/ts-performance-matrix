@@ -36,7 +36,7 @@ from camunda_orchestration_sdk.models import ProcessCreationByKey, ProcessInstan
 BPMN_PATH = os.environ.get("BPMN_PATH", "")
 PRECREATE_COUNT = int(os.environ.get("PRECREATE_COUNT", "0"))
 PAYLOAD_SIZE_KB = int(os.environ.get("PAYLOAD_SIZE_KB", "10"))
-CONCURRENCY = 50
+CONCURRENCY = 200
 CONTINUOUS = os.environ.get("CONTINUOUS", "0") == "1"
 READY_FILE = os.environ.get("READY_FILE", "")
 GO_FILE = os.environ.get("GO_FILE", "")
