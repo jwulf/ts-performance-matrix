@@ -14,7 +14,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ScenarioConfig } from './config.js';
-import type { ScenarioResult, ProcessResult } from './types.js';
+import type { ScenarioResult, ProcessResult, ServerResourceUsage } from './types.js';
 import { jainFairness } from './types.js';
 import {
   DEFAULT_TARGET_PER_WORKER,
@@ -186,12 +186,89 @@ export async function preCreateInstances(
   return { created, errors, durationS };
 }
 
+// ─── Continuous producer ─────────────────────────────────
+
+export interface ContinuousProducerHandle {
+  stop: () => Promise<{ created: number; errors: number; durationS: number; rate: number }>;
+}
+
+export function startContinuousProducer(
+  processDefKey: string,
+): ContinuousProducerHandle {
+  let stopped = false;
+  let created = 0;
+  let errors = 0;
+  const t0 = Date.now();
+
+  const run = async () => {
+    const { createCamundaClient } = await import('@camunda8/orchestration-cluster-api');
+    const CamundaKeys = await import('@camunda8/orchestration-cluster-api');
+
+    const client = createCamundaClient({
+      config: {
+        CAMUNDA_REST_ADDRESS: 'http://localhost:8080',
+        CAMUNDA_SDK_LOG_LEVEL: 'error',
+        CAMUNDA_SDK_BACKPRESSURE_PROFILE: 'BALANCED',
+        CAMUNDA_OAUTH_DISABLED: true,
+      } as any,
+    });
+
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let payload = '';
+    while (payload.length < DEFAULT_PAYLOAD_SIZE_KB * 1024) payload += alphabet[Math.floor(Math.random() * alphabet.length)];
+
+    const inflight: Promise<void>[] = [];
+    let lastLog = Date.now();
+
+    console.log(`[continuous-producer] Starting (concurrency=${DEFAULT_PRODUCER_CONCURRENCY})...`);
+
+    while (!stopped) {
+      while (inflight.length < DEFAULT_PRODUCER_CONCURRENCY && !stopped) {
+        const p = client
+          .createProcessInstance({
+            processDefinitionKey: CamundaKeys.ProcessDefinitionKey.assumeExists(processDefKey),
+            variables: { data: payload },
+          })
+          .then(() => { created++; })
+          .catch(() => { errors++; })
+          .finally(() => {
+            const idx = inflight.indexOf(p);
+            if (idx >= 0) inflight.splice(idx, 1);
+          });
+        inflight.push(p);
+      }
+      if (Date.now() - lastLog > 10_000) {
+        const elapsed = ((Date.now() - t0) / 1000).toFixed(0);
+        const rate = (created / ((Date.now() - t0) / 1000)).toFixed(0);
+        console.log(`[continuous-producer] ${created} ok, ${errors} err, ${elapsed}s, ~${rate}/s`);
+        lastLog = Date.now();
+      }
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    await Promise.allSettled(inflight);
+  };
+
+  const runPromise = run();
+
+  return {
+    stop: async () => {
+      stopped = true;
+      await runPromise;
+      const durationS = (Date.now() - t0) / 1000;
+      const rate = durationS > 0 ? created / durationS : 0;
+      console.log(`[continuous-producer] Stopped: ${created} created, ${errors} errors in ${durationS.toFixed(1)}s (~${rate.toFixed(0)}/s)`);
+      return { created, errors, durationS, rate };
+    },
+  };
+}
+
 // ─── Prometheus metrics ──────────────────────────────────
 
 interface MetricsSnapshot {
   counters: Record<string, number>;
   histCounts: Record<string, number>;
   histSums: Record<string, number>;
+  gauges: Record<string, number>;
 }
 
 const COUNTERS = [
@@ -209,9 +286,19 @@ const HISTOGRAMS = [
   'zeebe_process_instance_execution_time_seconds',
 ];
 
+const GAUGES = [
+  'process_cpu_usage',
+  'system_cpu_usage',
+  'jvm_threads_live_threads',
+];
+
+const GAUGE_SUM = [
+  'jvm_memory_used_bytes',
+];
+
 function scrapeMetrics(): MetricsSnapshot {
   const r = runCmd('curl', ['-sf', 'http://localhost:9600/actuator/prometheus'], 10_000);
-  const snap: MetricsSnapshot = { counters: {}, histCounts: {}, histSums: {} };
+  const snap: MetricsSnapshot = { counters: {}, histCounts: {}, histSums: {}, gauges: {} };
   if (r.exitCode !== 0) return snap;
 
   for (const line of r.stdout.split('\n')) {
@@ -230,6 +317,18 @@ function scrapeMetrics(): MetricsSnapshot {
       if (line.startsWith(`${metric}_sum`)) {
         const val = parseFloat(line.split(/\s+/).pop() || '0');
         snap.histSums[metric] = (snap.histSums[metric] || 0) + val;
+      }
+    }
+    for (const metric of GAUGES) {
+      if (line.startsWith(metric + ' ') || line.startsWith(metric + '{')) {
+        const val = parseFloat(line.split(/\s+/).pop() || '0');
+        snap.gauges[metric] = (snap.gauges[metric] || 0) + val;
+      }
+    }
+    for (const metric of GAUGE_SUM) {
+      if (line.startsWith(metric + '{')) {
+        const val = parseFloat(line.split(/\s+/).pop() || '0');
+        snap.gauges[metric] = (snap.gauges[metric] || 0) + val;
       }
     }
   }
@@ -257,6 +356,51 @@ function computeMetricsDelta(before: MetricsSnapshot, after: MetricsSnapshot) {
     jobActivationAvgMs: avgMs('zeebe_job_activation_time_seconds'),
     jobLifetimeAvgMs: avgMs('zeebe_job_life_time_seconds'),
     piExecutionAvgMs: avgMs('zeebe_process_instance_execution_time_seconds'),
+  };
+}
+
+// ─── Gauge sampling during test run ──────────────────────
+
+interface GaugeSample {
+  timestampMs: number;
+  processCpu: number;
+  systemCpu: number;
+  memoryUsedBytes: number;
+  liveThreads: number;
+}
+
+function sampleGaugesSync(): GaugeSample {
+  const snap = scrapeMetrics();
+  return {
+    timestampMs: Date.now(),
+    processCpu: snap.gauges['process_cpu_usage'] || 0,
+    systemCpu: snap.gauges['system_cpu_usage'] || 0,
+    memoryUsedBytes: snap.gauges['jvm_memory_used_bytes'] || 0,
+    liveThreads: snap.gauges['jvm_threads_live_threads'] || 0,
+  };
+}
+
+function computeResourceUsageLocal(samples: GaugeSample[]): ServerResourceUsage | null {
+  if (samples.length === 0) return null;
+  const avg = (vals: number[]) => vals.reduce((a, b) => a + b, 0) / vals.length;
+  const peak = (vals: number[]) => Math.max(...vals);
+
+  // Local runner is always 1 broker
+  const cpus = samples.map((s) => s.processCpu);
+  const sysCpus = samples.map((s) => s.systemCpu);
+  const memMb = samples.map((s) => s.memoryUsedBytes / (1024 * 1024));
+  const threads = samples.map((s) => s.liveThreads);
+
+  return {
+    samples: samples.length,
+    cpuAvg: avg(cpus),
+    cpuPeak: peak(cpus),
+    systemCpuAvg: avg(sysCpus),
+    systemCpuPeak: peak(sysCpus),
+    memoryUsedAvgMb: avg(memMb),
+    memoryUsedPeakMb: peak(memMb),
+    liveThreadsAvg: avg(threads),
+    liveThreadsPeak: peak(threads),
   };
 }
 
@@ -289,9 +433,10 @@ export async function runScenarioLocal(
         sdkLanguage, sdkMode, handlerType, cluster,
         totalCompleted: 0, totalErrors: 0, wallClockS: 0,
         aggregateThroughput: 0, jainFairness: 0,
-        processResults: [], serverMetrics: null,
+        processResults: [], serverMetrics: null, serverResourceUsage: null,
         status: 'error', errorMessage: 'Container failed to start',
         preCreate: { created: 0, errors: 0, durationS: 0 },
+        continuousProducer: null,
       };
     }
   }
@@ -368,6 +513,15 @@ export async function runScenarioLocal(
   fs.writeFileSync(goFile, '1');
   const t0 = Date.now();
 
+  // Start continuous producer (creates instances throughout the test)
+  const continuousProducerHandle = startContinuousProducer(processDefKey);
+
+  // Start gauge sampling (every 30s)
+  const gaugeSamples: GaugeSample[] = [];
+  const gaugeInterval = setInterval(() => {
+    gaugeSamples.push(sampleGaugesSync());
+  }, 30_000);
+
   // Wait for all children to exit
   const exitPromises = children.map(
     (child) => new Promise<void>((resolve) => {
@@ -380,6 +534,13 @@ export async function runScenarioLocal(
     Promise.all(exitPromises),
     new Promise<void>((resolve) => setTimeout(resolve, (opts.scenarioTimeout + 60) * 1000)),
   ]);
+
+  // Stop continuous producer
+  const continuousProducer = await continuousProducerHandle.stop();
+
+  // Stop gauge sampling
+  clearInterval(gaugeInterval);
+  console.log(`  [${scenario.id}] Collected ${gaugeSamples.length} gauge samples`);
 
   // Kill stragglers
   for (const child of children) {
@@ -444,8 +605,10 @@ export async function runScenarioLocal(
     jainFairness: fairness,
     processResults,
     serverMetrics,
+    serverResourceUsage: computeResourceUsageLocal(gaugeSamples),
     status: isTimeout ? 'timeout' : 'ok',
     preCreate,
+    continuousProducer,
   };
 
   // Write result file

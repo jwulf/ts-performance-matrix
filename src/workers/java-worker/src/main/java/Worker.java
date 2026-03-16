@@ -326,13 +326,18 @@ public class Worker {
         var precreateCount = envInt("PRECREATE_COUNT", 0);
         var payloadSizeKb = envInt("PAYLOAD_SIZE_KB", 10);
         var concurrency = 50;
+        var continuous = "1".equals(env("CONTINUOUS", "0"));
+        var readyFile = env("READY_FILE", "");
+        var goFile = env("GO_FILE", "");
+        var stopFile = env("STOP_FILE", "");
+        var statsFile = env("PRODUCER_STATS_FILE", "");
 
         if (bpmnPath.isEmpty()) {
             throw new IllegalStateException("BPMN_PATH not set");
         }
 
-        System.out.printf("[java-producer] broker=%s bpmn=%s precreate=%d%n",
-                BROKER_REST_URL, bpmnPath, precreateCount);
+        System.out.printf("[java-producer] broker=%s bpmn=%s precreate=%d continuous=%s%n",
+                BROKER_REST_URL, bpmnPath, precreateCount, continuous);
 
         var client = CamundaClient.newClientBuilder()
                 .restAddress(URI.create(BROKER_REST_URL))
@@ -352,11 +357,6 @@ public class Worker {
             // Wait for deployment propagation
             Thread.sleep(10_000);
 
-            if (precreateCount <= 0) {
-                System.out.println("[java-producer] No pre-creation requested, done.");
-                return;
-            }
-
             // Build payload
             var rng = new Random();
             var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -365,51 +365,128 @@ public class Worker {
             var payload = sb.toString();
             var variables = String.format("{\"data\":\"%s\"}", payload);
 
-            // Pre-create with concurrency control
-            var sem = new Semaphore(concurrency);
-            var created = new java.util.concurrent.atomic.AtomicInteger(0);
-            var errors = new java.util.concurrent.atomic.AtomicInteger(0);
-            var executor = Executors.newFixedThreadPool(concurrency);
-            long startMs = System.currentTimeMillis();
-            long lastLogMs = startMs;
+            // Phase 1: pre-create buffer
+            if (precreateCount > 0) {
+                var sem = new Semaphore(concurrency);
+                var created = new AtomicInteger(0);
+                var errors = new AtomicInteger(0);
+                var executor = Executors.newFixedThreadPool(concurrency);
+                long startMs = System.currentTimeMillis();
+                long lastLogMs = startMs;
 
-            System.out.printf("[java-producer] Creating %d process instances...%n", precreateCount);
+                System.out.printf("[java-producer] pre-create: creating %d instances...%n", precreateCount);
 
-            var futures = new ArrayList<Future<?>>();
-            for (int i = 0; i < precreateCount; i++) {
-                sem.acquire();
-                futures.add(executor.submit(() -> {
+                var futures = new ArrayList<Future<?>>();
+                for (int i = 0; i < precreateCount; i++) {
+                    sem.acquire();
+                    futures.add(executor.submit(() -> {
+                        try {
+                            client.newCreateInstanceCommand()
+                                    .processDefinitionKey(processDefKey)
+                                    .variables(variables)
+                                    .send()
+                                    .join();
+                            created.incrementAndGet();
+                        } catch (Exception ex) {
+                            errors.incrementAndGet();
+                        } finally {
+                            sem.release();
+                        }
+                    }));
+
+                    long now = System.currentTimeMillis();
+                    if (now - lastLogMs > 10_000) {
+                        int done = created.get() + errors.get();
+                        double elapsedS = (now - startMs) / 1000.0;
+                        double rate = elapsedS > 0 ? created.get() / elapsedS : 0;
+                        System.out.printf("[java-producer] pre-create: %d/%d (%d ok, %d err) %.0fs, ~%.0f/s%n",
+                                done, precreateCount, created.get(), errors.get(), elapsedS, rate);
+                        lastLogMs = now;
+                    }
+                }
+
+                for (var f : futures) f.get();
+                executor.shutdown();
+
+                double totalS = (System.currentTimeMillis() - startMs) / 1000.0;
+                System.out.printf("[java-producer] pre-create: done %d created, %d errors in %.1fs%n",
+                        created.get(), errors.get(), totalS);
+            }
+
+            // Signal ready
+            if (!readyFile.isEmpty()) {
+                Files.writeString(Path.of(readyFile), "1");
+                System.out.printf("[java-producer] Ready signal written to %s%n", readyFile);
+            }
+
+            if (!continuous) {
+                System.out.println("[java-producer] Done (no continuous mode).");
+                return;
+            }
+
+            // Wait for GO
+            if (!goFile.isEmpty()) {
+                System.out.printf("[java-producer] Waiting for GO file: %s%n", goFile);
+                while (!Files.exists(Path.of(goFile))) {
+                    Thread.sleep(100);
+                }
+                System.out.println("[java-producer] GO received, starting continuous production...");
+            }
+
+            // Phase 2: continuous production
+            var sem2 = new Semaphore(concurrency);
+            var contCreated = new AtomicInteger(0);
+            var contErrors = new AtomicInteger(0);
+            var executor2 = Executors.newFixedThreadPool(concurrency);
+            long contStart = System.currentTimeMillis();
+            long contLastLog = contStart;
+
+            System.out.printf("[java-producer] continuous: starting (concurrency=%d)...%n", concurrency);
+
+            while (stopFile.isEmpty() || !Files.exists(Path.of(stopFile))) {
+                sem2.acquire();
+                executor2.submit(() -> {
                     try {
                         client.newCreateInstanceCommand()
                                 .processDefinitionKey(processDefKey)
                                 .variables(variables)
                                 .send()
                                 .join();
-                        created.incrementAndGet();
+                        contCreated.incrementAndGet();
                     } catch (Exception ex) {
-                        errors.incrementAndGet();
+                        contErrors.incrementAndGet();
                     } finally {
-                        sem.release();
+                        sem2.release();
                     }
-                }));
+                });
 
                 long now = System.currentTimeMillis();
-                if (now - lastLogMs > 10_000) {
-                    int done = created.get() + errors.get();
-                    double elapsedS = (now - startMs) / 1000.0;
-                    double rate = elapsedS > 0 ? created.get() / elapsedS : 0;
-                    System.out.printf("[java-producer] %d/%d (%d ok, %d err) %.0fs, ~%.0f/s%n",
-                            done, precreateCount, created.get(), errors.get(), elapsedS, rate);
-                    lastLogMs = now;
+                if (now - contLastLog > 10_000) {
+                    double elapsedS = (now - contStart) / 1000.0;
+                    double rate = elapsedS > 0 ? contCreated.get() / elapsedS : 0;
+                    System.out.printf("[java-producer] continuous: %d ok, %d err, %.0fs, ~%.0f/s%n",
+                            contCreated.get(), contErrors.get(), elapsedS, rate);
+                    contLastLog = now;
                 }
             }
 
-            for (var f : futures) f.get();
-            executor.shutdown();
+            // Drain remaining tasks
+            executor2.shutdown();
+            executor2.awaitTermination(30, TimeUnit.SECONDS);
 
-            double totalS = (System.currentTimeMillis() - startMs) / 1000.0;
-            System.out.printf("[java-producer] Done: %d created, %d errors in %.1fs%n",
-                    created.get(), errors.get(), totalS);
+            double contDuration = (System.currentTimeMillis() - contStart) / 1000.0;
+            double contRate = contDuration > 0 ? contCreated.get() / contDuration : 0;
+            System.out.printf("[java-producer] continuous: stopped. %d created, %d errors in %.1fs (~%.0f/s)%n",
+                    contCreated.get(), contErrors.get(), contDuration, contRate);
+
+            // Write stats
+            if (!statsFile.isEmpty()) {
+                var statsJson = String.format(
+                        "{\"created\":%d,\"errors\":%d,\"durationS\":%.1f,\"rate\":%.1f}",
+                        contCreated.get(), contErrors.get(), contDuration, contRate);
+                Files.writeString(Path.of(statsFile), statsJson);
+                System.out.printf("[java-producer] continuous: stats written to %s%n", statsFile);
+            }
         } finally {
             client.close();
         }

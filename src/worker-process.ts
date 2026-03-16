@@ -128,7 +128,7 @@ async function runRestBalanced(httpSimPort: number): Promise<{ metrics: WorkerMe
     jobType: 'test-job',
     maxParallelJobs: ACTIVATE_BATCH * NUM_WORKERS,
     jobTimeoutMs: 30_000,
-    pollIntervalMs: 1,
+    pollIntervalMs: 100,
     autoStart: true,
     validateSchemas: false,
     jobHandler: async (job) => {

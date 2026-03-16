@@ -16,7 +16,7 @@ import * as path from 'node:path';
 import * as childProcess from 'node:child_process';
 import type { ScenarioConfig, ClusterConfig, SdkLanguage } from './config.js';
 import { GCP_DEFAULTS } from './config.js';
-import type { ScenarioResult, ProcessResult, ServerMetrics } from './types.js';
+import type { ScenarioResult, ProcessResult, ServerMetrics, ServerResourceUsage } from './types.js';
 import { jainFairness } from './types.js';
 
 // ─── Active VM tracking (for SIGINT cleanup) ────────────
@@ -555,47 +555,65 @@ BROKER_REST_URL=${config.brokerRestUrl} \\
 BROKER_GRPC_URL=${config.brokerGrpcUrl} \\
 RESULT_FILE=/opt/worker/result.json`;
 
-  // Leader (process-0) runs deploy + pre-create before signalling ready
-  const producerEnv = `BROKER_REST_URL=${config.brokerRestUrl} BPMN_PATH=/opt/worker/test-job-process.bpmn PRECREATE_COUNT=${config.preCreateCount} PAYLOAD_SIZE_KB=10`;
+  // --- Producer configuration (leader only) ---
+  const producerReadyFile = '/opt/worker/producer-ready';
+  const producerGoFile = '/opt/worker/producer-go';
+  const producerStopFile = '/opt/worker/producer-stop';
+  const producerStatsFile = '/opt/worker/producer-stats.json';
+  const producerEnv = `BROKER_REST_URL=${config.brokerRestUrl} BPMN_PATH=/opt/worker/test-job-process.bpmn PRECREATE_COUNT=${config.preCreateCount} PAYLOAD_SIZE_KB=10 CONTINUOUS=1 READY_FILE=${producerReadyFile} GO_FILE=${producerGoFile} STOP_FILE=${producerStopFile} PRODUCER_STATS_FILE=${producerStatsFile}`;
 
-  let producerBlock = '';
+  // Leader: launch producer as background process, then wait for pre-creation to finish
+  let leaderSetup = '';
+  let leaderStartContinuous = '';
+  let leaderStopProducer = '';
   if (config.isLeader) {
     const bpmnDownload = `gsutil cp gs://${opts.bucket}/${opts.runId}/test-job-process.bpmn /opt/worker/test-job-process.bpmn`;
+
+    let producerCmd = '';
     switch (config.sdkLanguage) {
       case 'ts':
-        producerBlock = `
-# ─── Leader: deploy + pre-create ───
-${bpmnDownload}
-${producerEnv} npx tsx src/ts-producer.ts
-echo "[leader] Producer finished"
-`;
+        producerCmd = `${producerEnv} npx tsx src/ts-producer.ts`;
         break;
       case 'python':
-        producerBlock = `
-# ─── Leader: deploy + pre-create ───
-${bpmnDownload}
-gsutil cp gs://${opts.bucket}/${opts.runId}/python-producer.py /opt/worker/python-producer.py
-${producerEnv} /opt/worker/venv/bin/python3 /opt/worker/python-producer.py
-echo "[leader] Producer finished"
-`;
+        producerCmd = `${producerEnv} /opt/worker/venv/bin/python3 /opt/worker/python-producer.py`;
         break;
       case 'csharp':
-        producerBlock = `
-# ─── Leader: deploy + pre-create ───
-${bpmnDownload}
-${producerEnv} ./CsharpWorker --produce
-echo "[leader] Producer finished"
-`;
+        producerCmd = `${producerEnv} ./CsharpWorker --produce`;
         break;
       case 'java':
-        producerBlock = `
-# ─── Leader: deploy + pre-create ───
-${bpmnDownload}
-${producerEnv} java -Djava.security.egd=file:/dev/./urandom -jar java-worker.jar --produce
-echo "[leader] Producer finished"
-`;
+        producerCmd = `${producerEnv} java -Djava.security.egd=file:/dev/./urandom -jar java-worker.jar --produce`;
         break;
     }
+
+    const pythonProducerDownload = config.sdkLanguage === 'python'
+      ? `gsutil cp gs://${opts.bucket}/${opts.runId}/python-producer.py /opt/worker/python-producer.py\n`
+      : '';
+
+    leaderSetup = `
+# ─── Leader: deploy + pre-create + continuous producer ───
+${bpmnDownload}
+${pythonProducerDownload}${producerCmd} &
+PRODUCER_PID=$!
+echo "[leader] Producer launched (PID=$PRODUCER_PID), waiting for pre-creation..."
+while [ ! -f ${producerReadyFile} ]; do sleep 0.5; done
+echo "[leader] Pre-creation done"
+`;
+
+    leaderStartContinuous = `
+# Signal producer to start continuous creation
+echo "1" > ${producerGoFile}
+echo "[leader] Continuous producer started"
+`;
+
+    leaderStopProducer = `
+# Stop continuous producer
+touch ${producerStopFile}
+wait $PRODUCER_PID 2>/dev/null || true
+echo "[leader] Producer stopped"
+# Upload producer stats
+gsutil cp ${producerStatsFile} \\
+  gs://${opts.bucket}/${opts.runId}/scenarios/${scenarioId}/producer-stats.json 2>/dev/null || true
+`;
   }
 
   // Startup log preamble — capture all output and upload to GCS on failure
@@ -606,16 +624,18 @@ trap 'echo "[FATAL] Startup script failed at line $LINENO (exit $?)"; gsutil cp 
 echo "=== Worker startup: ${workerId} at $(date) ==="
 `;
 
-  const barrierReady = `${producerBlock}
+  const barrierReady = `${leaderSetup}
 # Signal ready
 echo "1" | gsutil cp - gs://${opts.bucket}/${opts.runId}/scenarios/${scenarioId}/ready/${workerId}
 
 # Wait for go signal
 while ! gsutil -q stat gs://${opts.bucket}/${opts.runId}/scenarios/${scenarioId}/go 2>/dev/null; do
   sleep 0.5
-done`;
+done
+${leaderStartContinuous}`;
 
-  const uploadResult = `# Upload result
+  const uploadResult = `${leaderStopProducer}
+# Upload result
 gsutil cp /opt/worker/result.json \\
   gs://${opts.bucket}/${opts.runId}/scenarios/${scenarioId}/results/${workerId}.json
 
@@ -1088,6 +1108,7 @@ interface MetricsSnapshot {
   counters: Record<string, number>;
   histCounts: Record<string, number>;
   histSums: Record<string, number>;
+  gauges: Record<string, number>;
 }
 
 const PROM_COUNTERS = [
@@ -1105,8 +1126,20 @@ const PROM_HISTOGRAMS = [
   'zeebe_process_instance_execution_time_seconds',
 ];
 
+// Gauges: summed across all label variants per metric
+const PROM_GAUGES = [
+  'process_cpu_usage',
+  'system_cpu_usage',
+  'jvm_threads_live_threads',
+];
+
+// Gauges where all label variants should be summed into one value
+const PROM_GAUGE_SUM = [
+  'jvm_memory_used_bytes',
+];
+
 function parsePrometheusText(text: string): MetricsSnapshot {
-  const snap: MetricsSnapshot = { counters: {}, histCounts: {}, histSums: {} };
+  const snap: MetricsSnapshot = { counters: {}, histCounts: {}, histSums: {}, gauges: {} };
   for (const line of text.split('\n')) {
     if (line.startsWith('#') || !line.trim()) continue;
     for (const metric of PROM_COUNTERS) {
@@ -1125,13 +1158,25 @@ function parsePrometheusText(text: string): MetricsSnapshot {
         snap.histSums[metric] = (snap.histSums[metric] || 0) + val;
       }
     }
+    for (const metric of PROM_GAUGES) {
+      if (line.startsWith(metric + ' ') || line.startsWith(metric + '{')) {
+        const val = parseFloat(line.split(/\s+/).pop() || '0');
+        snap.gauges[metric] = (snap.gauges[metric] || 0) + val;
+      }
+    }
+    for (const metric of PROM_GAUGE_SUM) {
+      if (line.startsWith(metric + '{')) {
+        const val = parseFloat(line.split(/\s+/).pop() || '0');
+        snap.gauges[metric] = (snap.gauges[metric] || 0) + val;
+      }
+    }
   }
   return snap;
 }
 
 /** Scrape Prometheus from all brokers in the pool via SSH, summing across nodes. */
 async function scrapeMetricsGcp(opts: GcpOptions, pool: BrokerPool): Promise<MetricsSnapshot> {
-  const combined: MetricsSnapshot = { counters: {}, histCounts: {}, histSums: {} };
+  const combined: MetricsSnapshot = { counters: {}, histCounts: {}, histSums: {}, gauges: {} };
 
   const scrapeOne = async (vm: string, ip: string): Promise<{ stdout: string; exitCode: number }> => {
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -1156,9 +1201,78 @@ async function scrapeMetricsGcp(opts: GcpOptions, pool: BrokerPool): Promise<Met
     for (const [k, v] of Object.entries(snap.counters)) combined.counters[k] = (combined.counters[k] || 0) + v;
     for (const [k, v] of Object.entries(snap.histCounts)) combined.histCounts[k] = (combined.histCounts[k] || 0) + v;
     for (const [k, v] of Object.entries(snap.histSums)) combined.histSums[k] = (combined.histSums[k] || 0) + v;
+    for (const [k, v] of Object.entries(snap.gauges)) combined.gauges[k] = (combined.gauges[k] || 0) + v;
   }
 
   return combined;
+}
+
+// ─── Gauge sampling during test run ──────────────────────
+
+interface GaugeSample {
+  timestampMs: number;
+  processCpu: number;       // sum of process_cpu_usage across brokers
+  systemCpu: number;        // sum of system_cpu_usage across brokers
+  memoryUsedBytes: number;  // sum of jvm_memory_used_bytes across brokers
+  liveThreads: number;      // sum of jvm_threads_live_threads across brokers
+}
+
+/**
+ * Periodically scrape JVM gauge metrics from brokers until aborted.
+ * Returns collected samples for post-run analysis.
+ */
+async function sampleGaugesDuring(
+  opts: GcpOptions,
+  pool: BrokerPool,
+  intervalMs: number,
+  abortSignal: AbortSignal,
+): Promise<GaugeSample[]> {
+  const samples: GaugeSample[] = [];
+  while (!abortSignal.aborted) {
+    try {
+      const snap = await scrapeMetricsGcp(opts, pool);
+      samples.push({
+        timestampMs: Date.now(),
+        processCpu: snap.gauges['process_cpu_usage'] || 0,
+        systemCpu: snap.gauges['system_cpu_usage'] || 0,
+        memoryUsedBytes: snap.gauges['jvm_memory_used_bytes'] || 0,
+        liveThreads: snap.gauges['jvm_threads_live_threads'] || 0,
+      });
+    } catch {
+      // Scrape failed — skip this sample
+    }
+    // Wait for interval or abort
+    await new Promise<void>((resolve) => {
+      if (abortSignal.aborted) return resolve();
+      const timer = setTimeout(resolve, intervalMs);
+      abortSignal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+    });
+  }
+  return samples;
+}
+
+function computeResourceUsage(samples: GaugeSample[], brokerCount: number): ServerResourceUsage | null {
+  if (samples.length === 0) return null;
+  const avg = (vals: number[]) => vals.reduce((a, b) => a + b, 0) / vals.length;
+  const peak = (vals: number[]) => Math.max(...vals);
+
+  // CPU values are summed across brokers — divide by broker count for per-broker avg
+  const cpuPerBroker = samples.map((s) => s.processCpu / brokerCount);
+  const sysCpuPerBroker = samples.map((s) => s.systemCpu / brokerCount);
+  const memMb = samples.map((s) => s.memoryUsedBytes / (1024 * 1024));
+  const threads = samples.map((s) => s.liveThreads);
+
+  return {
+    samples: samples.length,
+    cpuAvg: avg(cpuPerBroker),
+    cpuPeak: peak(cpuPerBroker),
+    systemCpuAvg: avg(sysCpuPerBroker),
+    systemCpuPeak: peak(sysCpuPerBroker),
+    memoryUsedAvgMb: avg(memMb),
+    memoryUsedPeakMb: peak(memMb),
+    liveThreadsAvg: avg(threads),
+    liveThreadsPeak: peak(threads),
+  };
 }
 
 function computeMetricsDelta(before: MetricsSnapshot, after: MetricsSnapshot): ServerMetrics | null {
@@ -1336,6 +1450,10 @@ export async function runScenarioGcp(
   gcsWriteFlag(opts.bucket, `${scenarioGcsPrefix}/go`);
   const t0 = Date.now();
 
+  // Start gauge sampling in parallel with the test run (every 30s)
+  const gaugeAbort = new AbortController();
+  const gaugeSamplingPromise = sampleGaugesDuring(opts, brokerPool, 30_000, gaugeAbort.signal);
+
   // Wait for results
   const resultsReady = await gcsWaitForFiles(
     opts.bucket,
@@ -1343,6 +1461,11 @@ export async function runScenarioGcp(
     P,
     (opts.scenarioTimeout + 60) * 1000,
   );
+
+  // Stop gauge sampling
+  gaugeAbort.abort();
+  const gaugeSamples = await gaugeSamplingPromise;
+  console.log(`  [${scenario.id}] Collected ${gaugeSamples.length} gauge samples`);
 
   const wallClockS = (Date.now() - t0) / 1000;
   const isTimeout = !resultsReady;
@@ -1378,6 +1501,21 @@ export async function runScenarioGcp(
   // Scrape metrics after results collected
   const metricsAfter = await scrapeMetricsGcp(opts, brokerPool);
 
+  // Read continuous producer stats (uploaded by leader VM)
+  let continuousProducer: { created: number; errors: number; durationS: number; rate: number } | null = null;
+  try {
+    const stats = gcsReadJson(opts.bucket, `${scenarioGcsPrefix}/producer-stats.json`);
+    continuousProducer = {
+      created: stats.created || 0,
+      errors: stats.errors || 0,
+      durationS: stats.durationS || 0,
+      rate: stats.rate || 0,
+    };
+    console.log(`  [${scenario.id}] Continuous producer: ${continuousProducer.created} created at ~${continuousProducer.rate.toFixed(0)}/s`);
+  } catch {
+    console.log(`  [${scenario.id}] No continuous producer stats found`);
+  }
+
   // Cleanup worker VMs
   await deleteVms(opts, workerVmNames);
 
@@ -1397,8 +1535,10 @@ export async function runScenarioGcp(
     jainFairness: fairness,
     processResults,
     serverMetrics: computeMetricsDelta(metricsBefore, metricsAfter),
+    serverResourceUsage: computeResourceUsage(gaugeSamples, brokerPool.vmNames.length),
     status: isTimeout ? 'timeout' : 'ok',
     preCreate,
+    continuousProducer,
   };
 
   console.log(`  [${scenario.id}] => ${aggregateThroughput.toFixed(1)}/s, ${totalErrors} errors, ${wallClockS.toFixed(1)}s, Jain=${fairness.toFixed(3)}`);
@@ -1418,9 +1558,10 @@ function errorResult(scenario: ScenarioConfig, message: string): ScenarioResult 
     cluster: scenario.cluster,
     totalCompleted: 0, totalErrors: 0, wallClockS: 0,
     aggregateThroughput: 0, jainFairness: 0,
-    processResults: [], serverMetrics: null,
+    processResults: [], serverMetrics: null, serverResourceUsage: null,
     status: 'error', errorMessage: message,
     preCreate: { created: 0, errors: 0, durationS: 0 },
+    continuousProducer: null,
   };
 }
 

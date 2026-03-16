@@ -276,6 +276,11 @@ async Task RunProducer()
     var precreateCount = EnvInt("PRECREATE_COUNT", 0);
     var payloadSizeKb = EnvInt("PAYLOAD_SIZE_KB", 10);
     var concurrency = 50;
+    var continuous = Env("CONTINUOUS", "0") == "1";
+    var readyFile = Env("READY_FILE", "");
+    var goFile = Env("GO_FILE", "");
+    var stopFile = Env("STOP_FILE", "");
+    var statsFile = Env("PRODUCER_STATS_FILE", "");
 
     if (string.IsNullOrEmpty(bpmnPath))
     {
@@ -283,7 +288,7 @@ async Task RunProducer()
         Environment.Exit(1);
     }
 
-    Console.WriteLine($"[csharp-producer] broker={BROKER_REST_URL} bpmn={bpmnPath} precreate={precreateCount}");
+    Console.WriteLine($"[csharp-producer] broker={BROKER_REST_URL} bpmn={bpmnPath} precreate={precreateCount} continuous={continuous}");
 
     await using var client = new CamundaClient();
 
@@ -296,31 +301,98 @@ async Task RunProducer()
     // Wait for deployment propagation
     await Task.Delay(10_000);
 
-    if (precreateCount <= 0)
-    {
-        Console.WriteLine("[csharp-producer] No pre-creation requested, done.");
-        return;
-    }
-
     // Build payload
     var rng = new Random();
     var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     var payload = new string(Enumerable.Range(0, payloadSizeKb * 1024).Select(_ => chars[rng.Next(chars.Length)]).ToArray());
 
-    // Pre-create with concurrency control
-    var created = 0;
-    var errors = 0;
-    var sem = new SemaphoreSlim(concurrency);
-    var sw = Stopwatch.StartNew();
-    var lastLog = sw.Elapsed;
-
-    Console.WriteLine($"[csharp-producer] Creating {precreateCount} process instances...");
-
-    var tasks = new List<Task>();
-    for (int i = 0; i < precreateCount; i++)
+    // Phase 1: pre-create buffer
+    if (precreateCount > 0)
     {
-        await sem.WaitAsync();
-        tasks.Add(Task.Run(async () =>
+        var created = 0;
+        var errors = 0;
+        var sem = new SemaphoreSlim(concurrency);
+        var sw = Stopwatch.StartNew();
+        var lastLog = sw.Elapsed;
+
+        Console.WriteLine($"[csharp-producer] pre-create: creating {precreateCount} instances...");
+
+        var tasks = new List<Task>();
+        for (int i = 0; i < precreateCount; i++)
+        {
+            await sem.WaitAsync();
+            tasks.Add(Task.Run(async () =>
+            {
+                try
+                {
+                    await client.CreateProcessInstanceAsync(
+                        new Camunda.Orchestration.Sdk.Api.ProcessInstanceCreationInstructionByKey
+                        {
+                            ProcessDefinitionKey = processDefKey,
+                            Variables = new { data = payload },
+                        });
+                    Interlocked.Increment(ref created);
+                }
+                catch
+                {
+                    Interlocked.Increment(ref errors);
+                }
+                finally
+                {
+                    sem.Release();
+                }
+
+                if (sw.Elapsed - lastLog > TimeSpan.FromSeconds(10))
+                {
+                    var elapsed = (int)sw.Elapsed.TotalSeconds;
+                    var rate = (int)(created / sw.Elapsed.TotalSeconds);
+                    Console.WriteLine($"[csharp-producer] pre-create: {created + errors}/{precreateCount} ({created} ok, {errors} err) {elapsed}s, ~{rate}/s");
+                    lastLog = sw.Elapsed;
+                }
+            }));
+        }
+
+        await Task.WhenAll(tasks);
+        Console.WriteLine($"[csharp-producer] pre-create: done {created} created, {errors} errors in {sw.Elapsed.TotalSeconds:F1}s");
+    }
+
+    // Signal ready
+    if (!string.IsNullOrEmpty(readyFile))
+    {
+        await File.WriteAllTextAsync(readyFile, "1");
+        Console.WriteLine($"[csharp-producer] Ready signal written to {readyFile}");
+    }
+
+    if (!continuous)
+    {
+        Console.WriteLine("[csharp-producer] Done (no continuous mode).");
+        return;
+    }
+
+    // Wait for GO
+    if (!string.IsNullOrEmpty(goFile))
+    {
+        Console.WriteLine($"[csharp-producer] Waiting for GO file: {goFile}");
+        while (!File.Exists(goFile))
+        {
+            await Task.Delay(100);
+        }
+        Console.WriteLine("[csharp-producer] GO received, starting continuous production...");
+    }
+
+    // Phase 2: continuous production
+    var contCreated = 0;
+    var contErrors = 0;
+    var contSem = new SemaphoreSlim(concurrency);
+    var contSw = Stopwatch.StartNew();
+    var contLastLog = contSw.Elapsed;
+
+    Console.WriteLine($"[csharp-producer] continuous: starting (concurrency={concurrency})...");
+
+    while (string.IsNullOrEmpty(stopFile) || !File.Exists(stopFile))
+    {
+        await contSem.WaitAsync();
+        _ = Task.Run(async () =>
         {
             try
             {
@@ -330,30 +402,40 @@ async Task RunProducer()
                         ProcessDefinitionKey = processDefKey,
                         Variables = new { data = payload },
                     });
-                Interlocked.Increment(ref created);
+                Interlocked.Increment(ref contCreated);
             }
             catch
             {
-                Interlocked.Increment(ref errors);
+                Interlocked.Increment(ref contErrors);
             }
             finally
             {
-                sem.Release();
+                contSem.Release();
             }
+        });
 
-            if (sw.Elapsed - lastLog > TimeSpan.FromSeconds(10))
-            {
-                var elapsed = (int)sw.Elapsed.TotalSeconds;
-                var rate = (int)(created / sw.Elapsed.TotalSeconds);
-                Console.WriteLine($"[csharp-producer] {created + errors}/{precreateCount} ({created} ok, {errors} err) {elapsed}s, ~{rate}/s");
-                lastLog = sw.Elapsed;
-            }
-        }));
+        if (contSw.Elapsed - contLastLog > TimeSpan.FromSeconds(10))
+        {
+            var elapsed = (int)contSw.Elapsed.TotalSeconds;
+            var rate = contSw.Elapsed.TotalSeconds > 0 ? (int)(contCreated / contSw.Elapsed.TotalSeconds) : 0;
+            Console.WriteLine($"[csharp-producer] continuous: {contCreated} ok, {contErrors} err, {elapsed}s, ~{rate}/s");
+            contLastLog = contSw.Elapsed;
+        }
     }
 
-    await Task.WhenAll(tasks);
+    // Wait for inflight to drain
+    for (int i = 0; i < concurrency; i++) await contSem.WaitAsync();
 
-    Console.WriteLine($"[csharp-producer] Done: {created} created, {errors} errors in {sw.Elapsed.TotalSeconds:F1}s");
+    var contDuration = contSw.Elapsed.TotalSeconds;
+    var contRate = contDuration > 0 ? contCreated / contDuration : 0;
+    Console.WriteLine($"[csharp-producer] continuous: stopped. {contCreated} created, {contErrors} errors in {contDuration:F1}s (~{contRate:F0}/s)");
+
+    if (!string.IsNullOrEmpty(statsFile))
+    {
+        var statsJson = $"{{\"created\":{contCreated},\"errors\":{contErrors},\"durationS\":{contDuration:F1},\"rate\":{contRate:F1}}}";
+        await File.WriteAllTextAsync(statsFile, statsJson);
+        Console.WriteLine($"[csharp-producer] continuous: stats written to {statsFile}");
+    }
 }
 
 // ─── Models ──────────────────────────────────────────────

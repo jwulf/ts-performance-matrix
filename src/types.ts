@@ -37,6 +37,18 @@ export interface ServerMetrics {
   piExecutionAvgMs: number | null;
 }
 
+export interface ServerResourceUsage {
+  samples: number;
+  cpuAvg: number;            // process_cpu_usage avg per broker (0.0–1.0)
+  cpuPeak: number;           // process_cpu_usage peak per broker
+  systemCpuAvg: number;      // system_cpu_usage avg per broker (0.0–1.0)
+  systemCpuPeak: number;     // system_cpu_usage peak per broker
+  memoryUsedAvgMb: number;   // jvm_memory_used_bytes avg total across brokers (MB)
+  memoryUsedPeakMb: number;  // jvm_memory_used_bytes peak total across brokers (MB)
+  liveThreadsAvg: number;    // jvm_threads_live_threads avg total across brokers
+  liveThreadsPeak: number;   // jvm_threads_live_threads peak total across brokers
+}
+
 export interface ScenarioResult {
   // Configuration
   scenarioId: string;
@@ -60,6 +72,7 @@ export interface ScenarioResult {
 
   // Server-side metrics
   serverMetrics: ServerMetrics | null;
+  serverResourceUsage: ServerResourceUsage | null;
 
   // Status
   status: 'ok' | 'timeout' | 'error';
@@ -71,6 +84,14 @@ export interface ScenarioResult {
     errors: number;
     durationS: number;
   };
+
+  // Continuous producer stats (null if not enabled)
+  continuousProducer: {
+    created: number;
+    errors: number;
+    durationS: number;
+    rate: number;
+  } | null;
 }
 
 // ─── Jain's fairness index ───────────────────────────────
