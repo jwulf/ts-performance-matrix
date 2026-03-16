@@ -17,7 +17,7 @@ Tests every valid combination of (TotalWorkers, WorkersPerProcess) across SDK la
 
 **SDK modes:**
 - `rest` — async HTTP polling (default for all languages)
-- `rest-threaded` — sync handler executed in a thread pool (Python only, uses `execution_strategy="thread"`)
+- `rest-threaded` — CPU handler work offloaded to `worker_threads` (TS) or thread pool (Python), keeping the event loop/async runtime free for polling
 - `grpc-streaming` — gRPC streaming activation (TS, Java)
 - `grpc-polling` — gRPC long-polling activation (TS, Java)
 
@@ -25,12 +25,12 @@ Not all languages support all modes:
 
 | Language | Modes |
 |----------|-------|
-| TypeScript | `rest`, `grpc-streaming`, `grpc-polling` |
+| TypeScript | `rest`, `rest-threaded`, `grpc-streaming`, `grpc-polling` |
 | Python | `rest`, `rest-threaded` |
 | C# | `rest` |
 | Java | `rest`, `grpc-streaming`, `grpc-polling` |
 
-Only valid combinations where W is divisible by WPP are generated (20 topologies × 9 language-mode combos × 2 handlers × 2 clusters). Full matrix: **720 scenarios**.
+Only valid combinations where W is divisible by WPP are generated (20 topologies × 10 language-mode combos × 2 handlers × 2 clusters). Full matrix: **800 scenarios**.
 
 ## Prerequisites
 
@@ -80,7 +80,7 @@ npm run matrix:dry
 # Small smoke test (~4 scenarios, ~5 min)
 npm run matrix:quick
 
-# Full local run (~720 scenarios)
+# Full local run (~800 scenarios)
 npm run matrix:local
 ```
 
@@ -192,7 +192,7 @@ gcloud projects add-iam-policy-binding $GCP_PROJECT \
 ### Running on GCP
 
 ```bash
-# Full matrix (~720 scenarios, sequential)
+# Full matrix (~800 scenarios, sequential)
 node --import tsx/esm src/run-matrix.ts \
   --project $GCP_PROJECT \
   --zone us-central1-a \
@@ -369,9 +369,9 @@ Each scenario JSON contains:
 | Worker VM | e2-standard-2 (2 vCPU, 8GB) | ~$0.07 |
 | GCS | Negligible for coordination files | ~$0 |
 
-**Sequential run** (~720 scenarios × ~5 min): ~60 hours, ~$96  
-**4 lanes** (~720 scenarios): ~15 hours, ~$96 (same cost, faster wall-clock)  
-**8 lanes** (~720 scenarios): ~7.5 hours, ~$96  
+**Sequential run** (~800 scenarios × ~5 min): ~67 hours, ~$107  
+**4 lanes** (~800 scenarios): ~17 hours, ~$107 (same cost, faster wall-clock)  
+**8 lanes** (~800 scenarios): ~8.5 hours, ~$107  
 Worker VMs are ephemeral (created/destroyed per scenario), so cost scales with scenario count, not with parallelism. Lanes add broker VMs but reduce wall-clock time proportionally.
 
 ## Project structure

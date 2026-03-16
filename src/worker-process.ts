@@ -7,7 +7,7 @@
  *
  * Environment variables:
  *   WORKER_PROCESS_ID     — unique process identifier (e.g., "process-0")
- *   SDK_MODE              — rest | grpc-streaming | grpc-polling
+ *   SDK_MODE              — rest | rest-threaded | grpc-streaming | grpc-polling
  *   HANDLER_TYPE          — cpu | http
  *   HANDLER_LATENCY_MS    — handler simulation latency (default: 0 for cpu, 200 for http)
  *   NUM_WORKERS           — number of workers in this process (WPP)
@@ -24,11 +24,12 @@
 
 import * as fs from 'node:fs';
 import * as http from 'node:http';
+import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 
 // ─── Config ──────────────────────────────────────────────
 
 const PROCESS_ID = process.env.WORKER_PROCESS_ID || 'process-0';
-const SDK_MODE = (process.env.SDK_MODE || 'rest') as 'rest' | 'grpc-streaming' | 'grpc-polling';
+const SDK_MODE = (process.env.SDK_MODE || 'rest') as 'rest' | 'rest-threaded' | 'grpc-streaming' | 'grpc-polling';
 const HANDLER_TYPE = (process.env.HANDLER_TYPE || 'cpu') as 'cpu' | 'http';
 const HANDLER_LATENCY_MS = parseInt(process.env.HANDLER_LATENCY_MS || '200', 10);
 const NUM_WORKERS = parseInt(process.env.NUM_WORKERS || '1', 10);
@@ -78,6 +79,36 @@ function cpuWork(durationMs: number) {
   while (Date.now() < end) {
     x += Math.sin(x + 1);
   }
+}
+
+// ─── CPU work on worker_threads pool ─────────────────
+
+// Worker thread entry point: when this file is loaded as a worker thread,
+// it runs cpuWork and posts the result back.
+if (!isMainThread && parentPort) {
+  const { durationMs } = workerData as { durationMs: number };
+  cpuWork(durationMs);
+  parentPort.postMessage('done');
+  // Don't fall through to main() — this is a short-lived thread
+}
+
+// Thread pool for CPU-bound work — each call spawns a worker thread
+
+function cpuWorkThreaded(durationMs: number): Promise<void> {
+  if (durationMs <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(__filename, {
+      workerData: { durationMs },
+    });
+    worker.on('message', () => {
+      worker.terminate();
+      resolve();
+    });
+    worker.on('error', (err) => {
+      worker.terminate();
+      reject(err);
+    });
+  });
 }
 
 // ─── Barrier protocol (local mode) ──────────────────────
@@ -153,6 +184,69 @@ async function runRestBalanced(httpSimPort: number): Promise<{ metrics: WorkerMe
   });
 
   // Wait for completion or timeout
+  while (!done && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  done = true;
+  try { jobWorker.stop(); } catch { /* ignore */ }
+
+  const wallClockS = (Date.now() - t0) / 1000;
+  return { metrics: workerMetrics, wallClockS };
+}
+
+// ─── REST-threaded mode runner (CPU work on worker_threads) ──
+
+async function runRestThreaded(httpSimPort: number): Promise<{ metrics: WorkerMetrics[]; wallClockS: number }> {
+  const { createCamundaClient } = await import('@camunda8/orchestration-cluster-api');
+
+  const client = createCamundaClient({
+    config: {
+      CAMUNDA_REST_ADDRESS: BROKER_REST_URL,
+      CAMUNDA_SDK_LOG_LEVEL: 'error',
+      CAMUNDA_SDK_BACKPRESSURE_PROFILE: 'BALANCED',
+      CAMUNDA_OAUTH_DISABLED: true,
+    } as any,
+  });
+
+  const workerMetrics: WorkerMetrics[] = Array.from({ length: NUM_WORKERS }, (_, i) => ({
+    workerId: `${PROCESS_ID}-w${i}`,
+    completed: 0,
+    errors: 0,
+  }));
+
+  let done = false;
+  const t0 = Date.now();
+  const deadline = t0 + SCENARIO_TIMEOUT_S * 1000;
+  const totalTarget = NUM_WORKERS * TARGET_PER_WORKER;
+
+  const jobWorker = client.createJobWorker({
+    jobType: 'test-job',
+    maxParallelJobs: ACTIVATE_BATCH * NUM_WORKERS,
+    jobTimeoutMs: 30_000,
+    pollIntervalMs: 100,
+    autoStart: true,
+    validateSchemas: false,
+    jobHandler: async (job) => {
+      // Offload CPU work to a worker thread — keeps event loop free for polling
+      if (HANDLER_TYPE === 'cpu' && HANDLER_LATENCY_MS > 0) {
+        await cpuWorkThreaded(HANDLER_LATENCY_MS);
+      } else if (HANDLER_TYPE === 'http' && httpSimPort > 0) {
+        await fetch(`http://127.0.0.1:${httpSimPort}/work`);
+      }
+
+      const minWorker = workerMetrics.reduce((a, b) =>
+        a.completed < b.completed ? a : b
+      );
+      minWorker.completed++;
+
+      const totalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
+      if (totalCompleted >= totalTarget) done = true;
+
+      return job.complete({ variables: { done: true } });
+    },
+  });
+
   while (!done && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 50));
   }
@@ -313,6 +407,8 @@ async function main() {
     result = await runGrpcStream(httpSimPort);
   } else if (SDK_MODE === 'grpc-polling') {
     result = await runGrpcPoll(httpSimPort);
+  } else if (SDK_MODE === 'rest-threaded') {
+    result = await runRestThreaded(httpSimPort);
   } else {
     result = await runRestBalanced(httpSimPort);
   }
@@ -349,27 +445,30 @@ async function main() {
   process.exit(0);
 }
 
-main().catch((err) => {
-  console.error(`[worker-process] Fatal error:`, err);
+// Only run main() on the main thread — worker threads exit after cpuWork above
+if (isMainThread) {
+  main().catch((err) => {
+    console.error(`[worker-process] Fatal error:`, err);
 
-  // Write error result so orchestrator doesn't hang
-  fs.writeFileSync(
-    RESULT_FILE,
-    JSON.stringify({
-      processId: PROCESS_ID,
-      sdkMode: SDK_MODE,
-      handlerType: HANDLER_TYPE,
-      workersInProcess: NUM_WORKERS,
-      totalCompleted: 0,
-      totalErrors: 0,
-      wallClockS: 0,
-      throughput: 0,
-      perWorkerCompleted: [],
-      perWorkerErrors: [],
-      perWorkerThroughputs: [],
-      error: String(err),
-    }, null, 2)
-  );
+    // Write error result so orchestrator doesn't hang
+    fs.writeFileSync(
+      RESULT_FILE,
+      JSON.stringify({
+        processId: PROCESS_ID,
+        sdkMode: SDK_MODE,
+        handlerType: HANDLER_TYPE,
+        workersInProcess: NUM_WORKERS,
+        totalCompleted: 0,
+        totalErrors: 0,
+        wallClockS: 0,
+        throughput: 0,
+        perWorkerCompleted: [],
+        perWorkerErrors: [],
+        perWorkerThroughputs: [],
+        error: String(err),
+      }, null, 2)
+    );
 
-  process.exit(1);
-});
+    process.exit(1);
+  });
+}

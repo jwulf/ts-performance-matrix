@@ -91,7 +91,7 @@ For example, W=10 with WPP=25 is impossible.
 | 100 | 25 | 4 | |
 | 100 | 50 | 2 | |
 
-That's **20 topology configurations** × 9 language-mode combos × 2 handlers × 2 clusters = **720 scenarios**.
+That's **20 topology configurations** × 10 language-mode combos × 2 handlers × 2 clusters = **800 scenarios**.
 
 ### Key Questions This Answers
 
@@ -282,7 +282,7 @@ gsutil cp /opt/worker/result.json \
 
 ### Cost Estimate
 
-For a full 720-scenario run with ~5 min per scenario:
+For a full 800-scenario run with ~5 min per scenario:
 
 | Resource | Quantity | Duration | Cost/hr | Total |
 |----------|----------|----------|---------|-------|

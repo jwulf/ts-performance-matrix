@@ -21,7 +21,7 @@ export type ClusterConfig = (typeof CLUSTERS)[number];
 
 /** Valid (language, mode) combinations — not all languages support gRPC. */
 export const VALID_LANG_MODES: Record<SdkLanguage, readonly SdkMode[]> = {
-  ts: ['rest', 'grpc-streaming', 'grpc-polling'],
+  ts: ['rest', 'rest-threaded', 'grpc-streaming', 'grpc-polling'],
   python: ['rest', 'rest-threaded'],
   csharp: ['rest'],
   java: ['rest', 'grpc-streaming', 'grpc-polling'],
