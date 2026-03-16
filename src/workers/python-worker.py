@@ -6,7 +6,7 @@ Uses the camunda-orchestration-sdk package (published on PyPI) to poll and
 complete jobs via the Camunda REST API.
 
 Environment variables (same protocol as TS worker):
-  WORKER_PROCESS_ID, SDK_MODE (always "rest"), HANDLER_TYPE, HANDLER_LATENCY_MS,
+  WORKER_PROCESS_ID, SDK_MODE ("rest" or "rest-threaded"), HANDLER_TYPE, HANDLER_LATENCY_MS,
   NUM_WORKERS, TARGET_PER_WORKER, ACTIVATE_BATCH, PAYLOAD_SIZE_KB,
   SCENARIO_TIMEOUT_S, BROKER_REST_URL, RESULT_FILE, READY_FILE, GO_FILE
 """
@@ -165,7 +165,72 @@ async def run_rest(http_sim_port: int):
     return worker_completed, worker_errors, wall_clock_s
 
 
-# ─── Main ────────────────────────────────────────────────
+# ─── REST-threaded worker (sync handler in ThreadPoolExecutor) ────
+
+async def run_rest_threaded(http_sim_port: int):
+    import urllib.request
+
+    total_target = NUM_WORKERS * TARGET_PER_WORKER
+
+    # Per-worker metrics
+    worker_completed = [0] * NUM_WORKERS
+    worker_errors = [0] * NUM_WORKERS
+
+    done = False
+    t0 = time.monotonic()
+    deadline = t0 + SCENARIO_TIMEOUT_S
+
+    # Set SDK env vars from our config
+    os.environ["CAMUNDA_REST_ADDRESS"] = BROKER_REST_URL
+    os.environ["CAMUNDA_AUTH_STRATEGY"] = "NONE"
+
+    async with CamundaAsyncClient() as client:
+        config = WorkerConfig(
+            job_type="test-job",
+            job_timeout_milliseconds=30_000,
+            max_concurrent_jobs=ACTIVATE_BATCH * NUM_WORKERS,
+        )
+
+        # Sync handler — runs in ThreadPoolExecutor
+        def handler(job):
+            nonlocal done
+            # Simulate work
+            if HANDLER_TYPE == "cpu" and HANDLER_LATENCY_MS > 0:
+                cpu_work(HANDLER_LATENCY_MS)
+            elif HANDLER_TYPE == "http" and http_sim_port > 0:
+                try:
+                    urllib.request.urlopen(f"http://127.0.0.1:{http_sim_port}/work")
+                except Exception:
+                    pass
+
+            # Round-robin: assign to worker with fewest completions
+            min_idx = min(range(NUM_WORKERS), key=lambda i: worker_completed[i])
+            worker_completed[min_idx] += 1
+            total = sum(worker_completed)
+            if total >= total_target:
+                done = True
+
+            return {"done": True}
+
+        worker = client.create_job_worker(
+            config=config, callback=handler,
+            execution_strategy="thread", auto_start=True,
+        )
+
+        # Run workers as background task, poll for completion or timeout
+        worker_task = asyncio.create_task(client.run_workers())
+        try:
+            while not done and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+        finally:
+            worker_task.cancel()
+            try:
+                await worker_task
+            except asyncio.CancelledError:
+                pass
+
+    wall_clock_s = time.monotonic() - t0
+    return worker_completed, worker_errors, wall_clock_s
 
 async def main():
     print(f"[python-worker] id={PROCESS_ID} mode={SDK_MODE} handler={HANDLER_TYPE} workers={NUM_WORKERS}", flush=True)
@@ -181,7 +246,10 @@ async def main():
 
     print("[python-worker] GO received, starting benchmark...", flush=True)
 
-    worker_completed, worker_errors, wall_clock_s = await run_rest(http_sim_port)
+    if SDK_MODE == "rest-threaded":
+        worker_completed, worker_errors, wall_clock_s = await run_rest_threaded(http_sim_port)
+    else:
+        worker_completed, worker_errors, wall_clock_s = await run_rest(http_sim_port)
 
     total_completed = sum(worker_completed)
     total_errors = sum(worker_errors)

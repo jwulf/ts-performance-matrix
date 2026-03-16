@@ -281,6 +281,7 @@ async Task RunProducer()
     var goFile = Env("GO_FILE", "");
     var stopFile = Env("STOP_FILE", "");
     var statsFile = Env("PRODUCER_STATS_FILE", "");
+    var precreateStatsFile = Env("PRECREATE_STATS_FILE", "");
 
     if (string.IsNullOrEmpty(bpmnPath))
     {
@@ -354,6 +355,13 @@ async Task RunProducer()
 
         await Task.WhenAll(tasks);
         Console.WriteLine($"[csharp-producer] pre-create: done {created} created, {errors} errors in {sw.Elapsed.TotalSeconds:F1}s");
+
+        if (!string.IsNullOrEmpty(precreateStatsFile))
+        {
+            var pcStats = $"{{\"created\":{created},\"errors\":{errors},\"durationS\":{sw.Elapsed.TotalSeconds:F1}}}";
+            await File.WriteAllTextAsync(precreateStatsFile, pcStats);
+            Console.WriteLine($"[csharp-producer] Pre-create stats written to {precreateStatsFile}");
+        }
     }
 
     // Signal ready

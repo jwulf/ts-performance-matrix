@@ -331,6 +331,7 @@ public class Worker {
         var goFile = env("GO_FILE", "");
         var stopFile = env("STOP_FILE", "");
         var statsFile = env("PRODUCER_STATS_FILE", "");
+        var precreateStatsFile = env("PRECREATE_STATS_FILE", "");
 
         if (bpmnPath.isEmpty()) {
             throw new IllegalStateException("BPMN_PATH not set");
@@ -411,6 +412,13 @@ public class Worker {
                 double totalS = (System.currentTimeMillis() - startMs) / 1000.0;
                 System.out.printf("[java-producer] pre-create: done %d created, %d errors in %.1fs%n",
                         created.get(), errors.get(), totalS);
+
+                if (!precreateStatsFile.isEmpty()) {
+                    var pcJson = String.format("{\"created\":%d,\"errors\":%d,\"durationS\":%.1f}",
+                            created.get(), errors.get(), totalS);
+                    Files.writeString(Path.of(precreateStatsFile), pcJson);
+                    System.out.printf("[java-producer] Pre-create stats written to %s%n", precreateStatsFile);
+                }
             }
 
             // Signal ready

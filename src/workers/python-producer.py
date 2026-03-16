@@ -42,6 +42,7 @@ READY_FILE = os.environ.get("READY_FILE", "")
 GO_FILE = os.environ.get("GO_FILE", "")
 STOP_FILE = os.environ.get("STOP_FILE", "")
 PRODUCER_STATS_FILE = os.environ.get("PRODUCER_STATS_FILE", "")
+PRECREATE_STATS_FILE = os.environ.get("PRECREATE_STATS_FILE", "")
 
 
 async def create_batch(client, process_def_key, variables, count, label):
@@ -158,7 +159,11 @@ async def main():
 
         # Phase 1: pre-create buffer
         if PRECREATE_COUNT > 0:
-            await create_batch(client, process_def_key, variables, PRECREATE_COUNT, "pre-create")
+            pc_created, pc_errors, pc_duration = await create_batch(client, process_def_key, variables, PRECREATE_COUNT, "pre-create")
+            if PRECREATE_STATS_FILE:
+                with open(PRECREATE_STATS_FILE, "w") as f:
+                    json.dump({"created": pc_created, "errors": pc_errors, "durationS": pc_duration}, f)
+                print(f"[python-producer] Pre-create stats written to {PRECREATE_STATS_FILE}")
 
         # Signal ready
         if READY_FILE:

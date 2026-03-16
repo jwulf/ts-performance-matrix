@@ -11,20 +11,26 @@ Tests every valid combination of (TotalWorkers, WorkersPerProcess) across SDK la
 | SDK language | `ts`, `python`, `csharp`, `java` |
 | Total workers (W) | 10, 20, 50, 100 |
 | Workers per process (WPP) | 1, 2, 5, 10, 25, 50 |
-| SDK mode | `rest`, `grpc` |
+| SDK mode | `rest`, `rest-threaded`, `grpc-streaming`, `grpc-polling` |
 | Handler type | `cpu` (200ms busy-loop), `http` (200ms async wait) |
 | Cluster | 1 broker, 3 brokers |
+
+**SDK modes:**
+- `rest` — async HTTP polling (default for all languages)
+- `rest-threaded` — sync handler executed in a thread pool (Python only, uses `execution_strategy="thread"`)
+- `grpc-streaming` — gRPC streaming activation (TS, Java)
+- `grpc-polling` — gRPC long-polling activation (TS, Java)
 
 Not all languages support all modes:
 
 | Language | Modes |
 |----------|-------|
 | TypeScript | `rest`, `grpc-streaming`, `grpc-polling` |
-| Python | `rest` |
+| Python | `rest`, `rest-threaded` |
 | C# | `rest` |
 | Java | `rest`, `grpc-streaming`, `grpc-polling` |
 
-Only valid combinations where W is divisible by WPP are generated (20 topologies × 8 language-mode combos × 2 handlers × 2 clusters). Full matrix: **~640 scenarios**.
+Only valid combinations where W is divisible by WPP are generated (20 topologies × 9 language-mode combos × 2 handlers × 2 clusters). Full matrix: **720 scenarios**.
 
 ## Prerequisites
 
@@ -74,7 +80,7 @@ npm run matrix:dry
 # Small smoke test (~4 scenarios, ~5 min)
 npm run matrix:quick
 
-# Full local run (~392 scenarios)
+# Full local run (~720 scenarios)
 npm run matrix:local
 ```
 
@@ -186,7 +192,7 @@ gcloud projects add-iam-policy-binding $GCP_PROJECT \
 ### Running on GCP
 
 ```bash
-# Full matrix (~392 scenarios, sequential)
+# Full matrix (~720 scenarios, sequential)
 node --import tsx/esm src/run-matrix.ts \
   --project $GCP_PROJECT \
   --zone us-central1-a \
@@ -307,7 +313,7 @@ MATRIX FILTERS (comma-separated)
   --languages ts,python SDK languages (default: ts,python,csharp,java)
   --workers 10,20       Total worker counts (default: 10,20,50)
   --wpp 1,2,5,10        Workers per process (default: 1,2,5,10,25,50)
-  --modes rest           SDK modes (default: rest,grpc-streaming,grpc-polling)
+  --modes rest           SDK modes (default: rest,rest-threaded,grpc-streaming,grpc-polling)
   --handlers cpu,http   Handler types (default: cpu,http)
   --clusters 1broker    Cluster configs (default: 1broker,3broker)
 
@@ -363,9 +369,9 @@ Each scenario JSON contains:
 | Worker VM | e2-standard-2 (2 vCPU, 8GB) | ~$0.07 |
 | GCS | Negligible for coordination files | ~$0 |
 
-**Sequential run** (~392 scenarios × ~5 min): ~33 hours, ~$53  
-**4 lanes** (~392 scenarios): ~8 hours, ~$53 (same cost, faster wall-clock)  
-**8 lanes** (~392 scenarios): ~4 hours, ~$53  
+**Sequential run** (~720 scenarios × ~5 min): ~60 hours, ~$96  
+**4 lanes** (~720 scenarios): ~15 hours, ~$96 (same cost, faster wall-clock)  
+**8 lanes** (~720 scenarios): ~7.5 hours, ~$96  
 Worker VMs are ephemeral (created/destroyed per scenario), so cost scales with scenario count, not with parallelism. Lanes add broker VMs but reduce wall-clock time proportionally.
 
 ## Project structure

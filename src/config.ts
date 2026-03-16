@@ -9,7 +9,7 @@
 
 export const TOTAL_WORKERS = [10, 20, 50, 100] as const;
 export const WORKERS_PER_PROCESS = [1, 2, 5, 10, 25, 50] as const;
-export const SDK_MODES = ['rest', 'grpc-streaming', 'grpc-polling'] as const;
+export const SDK_MODES = ['rest', 'rest-threaded', 'grpc-streaming', 'grpc-polling'] as const;
 export const SDK_LANGUAGES = ['ts', 'python', 'csharp', 'java'] as const;
 export const HANDLER_TYPES = ['cpu', 'http'] as const;
 export const CLUSTERS = ['1broker', '3broker'] as const;
@@ -22,7 +22,7 @@ export type ClusterConfig = (typeof CLUSTERS)[number];
 /** Valid (language, mode) combinations — not all languages support gRPC. */
 export const VALID_LANG_MODES: Record<SdkLanguage, readonly SdkMode[]> = {
   ts: ['rest', 'grpc-streaming', 'grpc-polling'],
-  python: ['rest'],
+  python: ['rest', 'rest-threaded'],
   csharp: ['rest'],
   java: ['rest', 'grpc-streaming', 'grpc-polling'],
 } as const;

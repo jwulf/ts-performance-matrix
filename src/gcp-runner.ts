@@ -560,7 +560,8 @@ RESULT_FILE=/opt/worker/result.json`;
   const producerGoFile = '/opt/worker/producer-go';
   const producerStopFile = '/opt/worker/producer-stop';
   const producerStatsFile = '/opt/worker/producer-stats.json';
-  const producerEnv = `BROKER_REST_URL=${config.brokerRestUrl} BPMN_PATH=/opt/worker/test-job-process.bpmn PRECREATE_COUNT=${config.preCreateCount} PAYLOAD_SIZE_KB=10 CONTINUOUS=1 READY_FILE=${producerReadyFile} GO_FILE=${producerGoFile} STOP_FILE=${producerStopFile} PRODUCER_STATS_FILE=${producerStatsFile}`;
+  const precreateStatsFile = '/opt/worker/precreate-stats.json';
+  const producerEnv = `BROKER_REST_URL=${config.brokerRestUrl} BPMN_PATH=/opt/worker/test-job-process.bpmn PRECREATE_COUNT=${config.preCreateCount} PAYLOAD_SIZE_KB=10 CONTINUOUS=1 READY_FILE=${producerReadyFile} GO_FILE=${producerGoFile} STOP_FILE=${producerStopFile} PRODUCER_STATS_FILE=${producerStatsFile} PRECREATE_STATS_FILE=${precreateStatsFile}`;
 
   // Leader: launch producer as background process, then wait for pre-creation to finish
   let leaderSetup = '';
@@ -613,6 +614,8 @@ echo "[leader] Producer stopped"
 # Upload producer stats
 gsutil cp ${producerStatsFile} \\
   gs://${opts.bucket}/${opts.runId}/scenarios/${scenarioId}/producer-stats.json 2>/dev/null || true
+gsutil cp ${precreateStatsFile} \\
+  gs://${opts.bucket}/${opts.runId}/scenarios/${scenarioId}/precreate-stats.json 2>/dev/null || true
 `;
   }
 
@@ -1375,7 +1378,7 @@ export async function runScenarioGcp(
   const bpmnPath = path.resolve(import.meta.dirname, '..', 'fixtures', 'test-job-process.bpmn');
   gsutil(['cp', bpmnPath, `gs://${opts.bucket}/${opts.runId}/test-job-process.bpmn`]);
   console.log(`  [${scenario.id}] BPMN uploaded to GCS`);
-  const preCreate = { created: 0, errors: 0, durationS: 0 }; // tracked by leader VM
+  let preCreate = { created: 0, errors: 0, durationS: 0 };
 
   // Provision worker VMs
   const workerVmNames: string[] = [];
@@ -1500,6 +1503,19 @@ export async function runScenarioGcp(
 
   // Scrape metrics after results collected
   const metricsAfter = await scrapeMetricsGcp(opts, brokerPool);
+
+  // Read pre-creation stats (uploaded by leader VM)
+  try {
+    const pcStats = gcsReadJson(opts.bucket, `${scenarioGcsPrefix}/precreate-stats.json`);
+    preCreate = {
+      created: pcStats.created || 0,
+      errors: pcStats.errors || 0,
+      durationS: pcStats.durationS || 0,
+    };
+    console.log(`  [${scenario.id}] Pre-create: ${preCreate.created} created, ${preCreate.errors} errors in ${preCreate.durationS.toFixed(1)}s`);
+  } catch {
+    console.log(`  [${scenario.id}] No pre-create stats found`);
+  }
 
   // Read continuous producer stats (uploaded by leader VM)
   let continuousProducer: { created: number; errors: number; durationS: number; rate: number } | null = null;

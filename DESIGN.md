@@ -59,7 +59,7 @@ throughput = f(total_workers, workers_per_process, sdk_mode, handler_type, clust
 |-----------|--------|-----------|
 | **Total workers (W)** | 10, 20, 50, 100 | Small team → medium → large deployment → backpressure stress test |
 | **Workers per process (WPP)** | 1, 2, 5, 10, 25, 50 | Granular sweep from full isolation to full sharing |
-| **SDK mode** | `rest`, `grpc-streaming`, `grpc-poll` | Three competitive modes (not all languages support all modes) |
+| **SDK mode** | `rest`, `rest-threaded`, `grpc-streaming`, `grpc-poll` | Four competitive modes (not all languages support all modes) |
 | **Handler type** | `cpu`, `http` | CPU-bound (200ms busy-loop) vs I/O-bound (200ms async wait) |
 | **Cluster** | `1broker`, `3broker` | Single vs distributed broker |
 
@@ -78,7 +78,6 @@ For example, W=10 with WPP=25 is impossible.
 | 20 | 2 | 10 | |
 | 20 | 5 | 4 | |
 | 20 | 10 | 2 | |
-| 20 | 20 | 1 | Full sharing |
 | 50 | 1 | 50 | Full isolation |
 | 50 | 2 | 25 | |
 | 50 | 5 | 10 | |
@@ -91,9 +90,8 @@ For example, W=10 with WPP=25 is impossible.
 | 100 | 10 | 10 | |
 | 100 | 25 | 4 | |
 | 100 | 50 | 2 | |
-| 100 | 100 | 1 | Full sharing |
 
-That's **20 topology configurations** × 8 language-mode combos × 2 handlers × 2 clusters = **640 scenarios**.
+That's **20 topology configurations** × 9 language-mode combos × 2 handlers × 2 clusters = **720 scenarios**.
 
 ### Key Questions This Answers
 
@@ -284,7 +282,7 @@ gsutil cp /opt/worker/result.json \
 
 ### Cost Estimate
 
-For a full 640-scenario run with ~5 min per scenario:
+For a full 720-scenario run with ~5 min per scenario:
 
 | Resource | Quantity | Duration | Cost/hr | Total |
 |----------|----------|----------|---------|-------|

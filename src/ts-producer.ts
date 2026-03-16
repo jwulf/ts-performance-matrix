@@ -14,6 +14,7 @@
  *   GO_FILE                — wait for this file before starting continuous mode (optional)
  *   STOP_FILE              — stop continuous production when this file appears
  *   PRODUCER_STATS_FILE    — write continuous producer stats JSON here on exit
+ *   PRECREATE_STATS_FILE   — write pre-creation stats JSON here after pre-creation
  */
 
 import * as fs from 'node:fs';
@@ -29,6 +30,7 @@ const READY_FILE = process.env.READY_FILE || '';
 const GO_FILE = process.env.GO_FILE || '';
 const STOP_FILE = process.env.STOP_FILE || '';
 const PRODUCER_STATS_FILE = process.env.PRODUCER_STATS_FILE || '';
+const PRECREATE_STATS_FILE = process.env.PRECREATE_STATS_FILE || '';
 
 async function createBatch(
   client: ReturnType<typeof createCamundaClient>,
@@ -159,7 +161,11 @@ async function main() {
 
   // Phase 1: pre-create buffer
   if (PRECREATE_COUNT > 0) {
-    await createBatch(client, processDefinitionKey, payload, PRECREATE_COUNT, 'pre-create');
+    const pcStats = await createBatch(client, processDefinitionKey, payload, PRECREATE_COUNT, 'pre-create');
+    if (PRECREATE_STATS_FILE) {
+      fs.writeFileSync(PRECREATE_STATS_FILE, JSON.stringify(pcStats));
+      console.log(`[ts-producer] Pre-create stats written to ${PRECREATE_STATS_FILE}`);
+    }
   }
 
   // Signal ready (pre-creation done)
