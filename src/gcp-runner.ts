@@ -1348,6 +1348,16 @@ function gcsReadJson(bucket: string, filePath: string): any {
   }
 }
 
+function gcsWriteJson(bucket: string, filePath: string, data: unknown): void {
+  const tmpFile = `/tmp/gcs-write-${Date.now()}.json`;
+  try {
+    fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2));
+    gsutil(['cp', tmpFile, `gs://${bucket}/${filePath}`], 15_000);
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+  }
+}
+
 // ─── Run one scenario on GCP ─────────────────────────────
 
 export async function runScenarioGcp(
@@ -1558,6 +1568,13 @@ export async function runScenarioGcp(
   };
 
   console.log(`  [${scenario.id}] => ${aggregateThroughput.toFixed(1)}/s, ${totalErrors} errors, ${wallClockS.toFixed(1)}s, Jain=${fairness.toFixed(3)}`);
+
+  // Upload aggregated summary to GCS for post-run analysis
+  try {
+    gcsWriteJson(opts.bucket, `${scenarioGcsPrefix}/results/scenario-summary.json`, result);
+  } catch (e) {
+    console.warn(`  [${scenario.id}] Failed to upload scenario summary to GCS:`, e);
+  }
 
   return result;
 }

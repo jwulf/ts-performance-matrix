@@ -224,10 +224,12 @@ gs://perf-matrix-{run-id}/
         worker-1
         ...
       results/
-        worker-0.json         # Written by each worker VM on completion
-        worker-1.json
+        process-0.json        # Written by each worker VM on completion
+        process-1.json
         ...
+        scenario-summary.json # Aggregated result written by orchestrator
       producer-stats.json     # Continuous producer stats (separate from results/)
+      precreate-stats.json    # Pre-creation stats (leader VM only)
       broker-metrics-before.json
       broker-metrics-after.json
 ```
@@ -480,6 +482,68 @@ of CPU saturation, memory pressure, or thread exhaustion during high-concurrency
 ```
 
 ## Analysis Outputs
+
+### Post-Run Data Retrieval
+
+Each scenario produces two levels of result data in GCS:
+
+**Per-process files** (`results/process-{N}.json`) — written by individual worker VMs:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `processId` | string | e.g. `process-0` |
+| `sdkMode` | string | `rest`, `rest-threaded`, `grpc-streaming`, `grpc-polling` |
+| `handlerType` | string | `cpu` or `http` |
+| `workersInProcess` | number | Number of workers in this process |
+| `totalCompleted` | number | Jobs completed by this process |
+| `totalErrors` | number | Errors in this process |
+| `wallClockS` | number | Wall-clock duration (seconds) |
+| `throughput` | number | Per-process throughput (jobs/s) |
+| `perWorkerCompleted` | number[] | Completions per worker |
+| `perWorkerErrors` | number[] | Errors per worker |
+| `perWorkerThroughputs` | number[] | Throughput per worker |
+
+**Scenario summary** (`results/scenario-summary.json`) — written by the orchestrator after
+collecting all per-process results. This is the primary file for analysis:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `scenarioId` | string | Unique scenario identifier |
+| `totalWorkers` | number | Total workers across all processes |
+| `workersPerProcess` | number | Workers per process |
+| `processes` | number | Number of OS processes |
+| `sdkLanguage` | string | `ts`, `python`, `csharp`, `java` |
+| `sdkMode` | string | Transport mode |
+| `handlerType` | string | `cpu` or `http` |
+| `cluster` | string | `1broker` or `3broker` |
+| `totalCompleted` | number | Total jobs completed across all processes |
+| `totalErrors` | number | Total errors across all processes |
+| `wallClockS` | number | Wall-clock duration |
+| `aggregateThroughput` | number | `totalCompleted / wallClockS` (jobs/s) |
+| `jainFairness` | number | Jain's fairness index across all individual workers (0–1) |
+| `processResults` | array | Per-process breakdown (same shape as per-process files) |
+| `serverMetrics` | object/null | Prometheus counter deltas (GCP only) |
+| `serverResourceUsage` | object/null | JVM gauge aggregates (GCP only) |
+| `status` | string | `ok`, `timeout`, or `error` |
+| `preCreate` | object | Pre-creation stats |
+| `continuousProducer` | object/null | Continuous producer stats |
+
+To download all scenario summaries for a run:
+
+```bash
+# List available summaries
+gsutil ls gs://camunda-perf-matrix/run-{ID}-l*/scenarios/*/results/scenario-summary.json | wc -l
+
+# Download all summaries to a local directory
+mkdir -p /tmp/run-{ID}
+gsutil -m cp gs://camunda-perf-matrix/run-{ID}-l*/scenarios/*/results/scenario-summary.json /tmp/run-{ID}/
+```
+
+Note: Multi-lane runs use `run-{ID}-l{N}` as the GCS prefix (one per lane). The summary
+files are self-contained — each includes the full `scenarioId` so files from different
+lanes can be collected into a flat directory without conflicts.
+
+### Planned Report Outputs
 
 The final report will include:
 
