@@ -95,11 +95,23 @@ That's **20 topology configurations** × 10 language-mode combos × 2 handlers �
 
 ### Key Questions This Answers
 
+**Worker-to-Process Ratio:**
 1. **At what WPP does throughput degrade?** Is the drop linear or cliff-like?
 2. **At what WPP does fairness collapse?** Do workers within a process get starved?
-3. **Does the crossover point differ by transport?** REST vs gRPC may have different sweet spots.
-4. **Does cluster size shift the crossover?** More broker capacity may tolerate more sharing.
-5. **What's the cost of isolation?** Connection overhead and memory at 50 separate processes.
+3. **Does cluster size shift the crossover?** More broker capacity may tolerate more sharing.
+4. **What's the cost of isolation?** Connection overhead and memory at 50 separate processes.
+5. **What's the ideal process/worker split** for a given SDK and scenario?
+
+**Transport & Execution Strategy:**
+6. **How do REST, gRPC polling, and gRPC streaming compare** across the performance envelope?
+7. **Does the crossover point differ by transport?** REST vs gRPC may have different sweet spots.
+8. **Does offloading CPU work to threads help?** (TS `worker_threads`, Python `ThreadPoolExecutor`)
+9. **What is the recommended transport/execution strategy** for an SDK given workload characteristics (I/O-bound vs CPU-bound)?
+
+**Cross-SDK Comparison:**
+10. **How do the SDKs perform against each other** (TS, Python, C#, Java) on the same workload?
+11. **Does client-side adaptive backpressure management make a measurable difference** to throughput, and in what scenarios?
+12. **Which SDK/transport combinations are production-viable** at scale, and which have stability issues (error rates, timeouts)?
 
 ## Architecture
 
