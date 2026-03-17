@@ -1295,7 +1295,13 @@ function computeMetricsDelta(before: MetricsSnapshot, after: MetricsSnapshot): S
   const hs = (metric: string) => (after.histSums[metric] || 0) - (before.histSums[metric] || 0);
   const avgMs = (metric: string) => {
     const count = hc(metric);
-    return count > 0 ? (hs(metric) / count) * 1000 : null;
+    const sum = hs(metric);
+    // Negative delta means partial scrape failure (e.g. one broker missing from after-scrape)
+    if (count <= 0 || sum < 0) return null;
+    const ms = (sum / count) * 1000;
+    // Sanity: if average exceeds 1 hour, the data is corrupt (stale accumulation, partial scrape, etc.)
+    if (ms > 3_600_000) return null;
+    return ms;
   };
 
   const result: ServerMetrics = {

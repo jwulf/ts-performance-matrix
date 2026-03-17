@@ -254,9 +254,9 @@
       "recordsProcessed": 620996,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -587886092.4282484,
-      "jobLifetimeAvgMs": 96294228.54230073,
-      "piExecutionAvgMs": 96294228.54230073
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -537,9 +537,9 @@
       "recordsProcessed": 1712902,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 159227759.7926829,
-      "jobLifetimeAvgMs": 18162642.48599544,
-      "piExecutionAvgMs": 18162642.48599544
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 9,
@@ -820,9 +820,9 @@
       "recordsProcessed": 1255056,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -225338514.40968055,
-      "jobLifetimeAvgMs": 219707381.88579398,
-      "piExecutionAvgMs": 219707381.88579398
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 9,
@@ -1105,9 +1105,9 @@
       "recordsProcessed": 1742982,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -208578764.0464865,
-      "jobLifetimeAvgMs": -143922718.83783054,
-      "piExecutionAvgMs": -143922718.83783054
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -1208,9 +1208,9 @@
       "recordsProcessed": 69092,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -1761426586.3399682,
-      "jobLifetimeAvgMs": -6543546988.8232565,
-      "piExecutionAvgMs": -6543546988.8232565
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -1311,9 +1311,9 @@
       "recordsProcessed": 367648,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -936021076.753738,
-      "jobLifetimeAvgMs": -478508844.71335566,
-      "piExecutionAvgMs": -478508844.71335566
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -1434,9 +1434,9 @@
       "recordsProcessed": 125930,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -2923167750.442511,
-      "jobLifetimeAvgMs": 162259038.42466056,
-      "piExecutionAvgMs": 162259038.42466056
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 9,
@@ -1561,9 +1561,9 @@
       "recordsProcessed": 1585784,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 216918746.0697745,
-      "jobLifetimeAvgMs": -127412021.38169165,
-      "piExecutionAvgMs": -127412021.38169165
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -1690,9 +1690,9 @@
       "recordsProcessed": 967110,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 305469859.14442635,
-      "jobLifetimeAvgMs": 104089145.0780946,
-      "piExecutionAvgMs": 104089145.0780946
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -1873,9 +1873,9 @@
       "recordsProcessed": 320376,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -1206032932.9988625,
-      "jobLifetimeAvgMs": 148621093.77225167,
-      "piExecutionAvgMs": 148621093.77225167
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -2066,9 +2066,9 @@
       "recordsProcessed": 1697662,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -2608706.7307435656,
-      "jobLifetimeAvgMs": 73790927.79292019,
-      "piExecutionAvgMs": 73790927.79292019
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 7,
@@ -2249,9 +2249,9 @@
       "recordsProcessed": 1090180,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 19835611.404719178,
-      "jobLifetimeAvgMs": 325380737.33537173,
-      "piExecutionAvgMs": 325380737.33537173
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 9,
@@ -2443,9 +2443,9 @@
       "recordsProcessed": 1699506,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -50016222.77989648,
-      "jobLifetimeAvgMs": -9383156.6886797,
-      "piExecutionAvgMs": -9383156.6886797
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -2956,9 +2956,9 @@
       "recordsProcessed": 1197408,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 159560047.67175505,
-      "jobLifetimeAvgMs": -252529308.278404,
-      "piExecutionAvgMs": -252529308.278404
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -3469,9 +3469,9 @@
       "recordsProcessed": 1761160,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -127473084.4557044,
-      "jobLifetimeAvgMs": -169648211.67741293,
-      "piExecutionAvgMs": -169648211.67741293
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -3982,9 +3982,9 @@
       "recordsProcessed": 1502812,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 236322668.34242773,
-      "jobLifetimeAvgMs": -96307054.42099187,
-      "piExecutionAvgMs": -96307054.42099187
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -4495,9 +4495,9 @@
       "recordsProcessed": 1720726,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 127115453.89644241,
-      "jobLifetimeAvgMs": -71690845.6180576,
-      "piExecutionAvgMs": -71690845.6180576
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -4808,7 +4808,7 @@
       "recordsProcessed": 603868,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 449547599.4983024,
+      "jobActivationAvgMs": null,
       "jobLifetimeAvgMs": 538801.9485567787,
       "piExecutionAvgMs": 538801.9485567787
     },
@@ -5141,9 +5141,9 @@
       "recordsProcessed": 1693012,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -22589735.63894835,
-      "jobLifetimeAvgMs": -100019585.85496096,
-      "piExecutionAvgMs": -100019585.85496096
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -5454,9 +5454,9 @@
       "recordsProcessed": 1391498,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -222032847.12566128,
-      "jobLifetimeAvgMs": 65016302.37734972,
-      "piExecutionAvgMs": 65016302.37734972
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -5788,9 +5788,9 @@
       "recordsProcessed": 1780114,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -108957537.89377446,
-      "jobLifetimeAvgMs": -84855478.82049035,
-      "piExecutionAvgMs": -84855478.82049035
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -5941,9 +5941,9 @@
       "recordsProcessed": 129954,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -516136038.00540847,
-      "jobLifetimeAvgMs": -2505013648.842194,
-      "piExecutionAvgMs": -2505013648.842194
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 9,
@@ -6100,9 +6100,9 @@
       "recordsProcessed": 407210,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 353736963.0439366,
-      "jobLifetimeAvgMs": -427744053.07191867,
-      "piExecutionAvgMs": -427744053.07191867
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 9,
@@ -6253,9 +6253,9 @@
       "recordsProcessed": 608924,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -81688814.47185788,
-      "jobLifetimeAvgMs": -519420609.0499313,
-      "piExecutionAvgMs": -519420609.0499313
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 12,
@@ -6412,9 +6412,9 @@
       "recordsProcessed": 1357896,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -65056414.36526917,
-      "jobLifetimeAvgMs": 200301705.30292222,
-      "piExecutionAvgMs": 200301705.30292222
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -6613,9 +6613,9 @@
       "recordsProcessed": 1802132,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -78011709.45878665,
-      "jobLifetimeAvgMs": -97638208.93073383,
-      "piExecutionAvgMs": -97638208.93073383
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -6817,9 +6817,9 @@
       "recordsProcessed": 1616974,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -158193634.2957804,
-      "jobLifetimeAvgMs": 225244680.39957255,
-      "piExecutionAvgMs": 225244680.39957255
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 9,
@@ -7520,9 +7520,9 @@
       "recordsProcessed": 974806,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 315626194.1229718,
-      "jobLifetimeAvgMs": -290051274.5635289,
-      "piExecutionAvgMs": -290051274.5635289
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -8274,9 +8274,9 @@
       "recordsProcessed": 1546432,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 201372929.9509682,
-      "jobLifetimeAvgMs": 178593973.19274175,
-      "piExecutionAvgMs": 178593973.19274175
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -8977,9 +8977,9 @@
       "recordsProcessed": 1550434,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 205504335.2794665,
-      "jobLifetimeAvgMs": 234257306.70675287,
-      "piExecutionAvgMs": 234257306.70675287
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -9731,9 +9731,9 @@
       "recordsProcessed": 1593324,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -207937371.75100642,
-      "jobLifetimeAvgMs": -156289485.75599253,
-      "piExecutionAvgMs": -156289485.75599253
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -10934,9 +10934,9 @@
       "recordsProcessed": 1346302,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 64422354.56616865,
-      "jobLifetimeAvgMs": -94062733.30314904,
-      "piExecutionAvgMs": -94062733.30314904
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -12137,9 +12137,9 @@
       "recordsProcessed": 1718704,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 169848665.57435793,
-      "jobLifetimeAvgMs": -93128225.95292373,
-      "piExecutionAvgMs": -93128225.95292373
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -13340,9 +13340,9 @@
       "recordsProcessed": 1638328,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 33975789.3870459,
-      "jobLifetimeAvgMs": 33978401.738878675,
-      "piExecutionAvgMs": 33978401.738878675
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 8,
@@ -13743,9 +13743,9 @@
       "recordsProcessed": 554300,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -50975464.14629752,
-      "jobLifetimeAvgMs": -698286776.9348731,
-      "piExecutionAvgMs": -698286776.9348731
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -14296,9 +14296,9 @@
       "recordsProcessed": 478258,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 604456212.2520058,
-      "jobLifetimeAvgMs": 151731490.73103255,
-      "piExecutionAvgMs": 151731490.73103255
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -14869,9 +14869,9 @@
       "recordsProcessed": 2013808,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 32364128.69253322,
-      "jobLifetimeAvgMs": 139884131.1521093,
-      "piExecutionAvgMs": 139884131.1521093
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -15422,9 +15422,9 @@
       "recordsProcessed": 1552342,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 159638560.32262397,
-      "jobLifetimeAvgMs": -228159344.75824517,
-      "piExecutionAvgMs": -228159344.75824517
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -15998,9 +15998,9 @@
       "recordsProcessed": 1877590,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -18806967.670819305,
-      "jobLifetimeAvgMs": -112894209.83218478,
-      "piExecutionAvgMs": -112894209.83218478
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 7,
@@ -16751,9 +16751,9 @@
       "recordsProcessed": 912152,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 282462395.3898783,
-      "jobLifetimeAvgMs": -322221181.5247397,
-      "piExecutionAvgMs": -322221181.5247397
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -17544,9 +17544,9 @@
       "recordsProcessed": 2015768,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -12569361.235653566,
-      "jobLifetimeAvgMs": -156059400.40907922,
-      "piExecutionAvgMs": -156059400.40907922
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -18297,9 +18297,9 @@
       "recordsProcessed": 1995818,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 58480450.435448594,
-      "jobLifetimeAvgMs": 58488953.047043614,
-      "piExecutionAvgMs": 58488953.047043614
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -19091,9 +19091,9 @@
       "recordsProcessed": 2028684,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 38012734.43239399,
-      "jobLifetimeAvgMs": -98444317.94343328,
-      "piExecutionAvgMs": -98444317.94343328
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -19484,9 +19484,9 @@
       "recordsProcessed": 36896,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -1633146319.1872091,
-      "jobLifetimeAvgMs": 16911506613.61413,
-      "piExecutionAvgMs": 16911506613.61413
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -19884,7 +19884,7 @@
       "recordsProcessed": 70954,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 552118309.0393509,
+      "jobActivationAvgMs": null,
       "jobLifetimeAvgMs": null,
       "piExecutionAvgMs": null
     },
@@ -20277,9 +20277,9 @@
       "recordsProcessed": 207118,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 1129405475.8352745,
-      "jobLifetimeAvgMs": 746356080.6402333,
-      "piExecutionAvgMs": 746356080.6402333
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 12,
@@ -20678,9 +20678,9 @@
       "recordsProcessed": 384114,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -386288644.4506833,
-      "jobLifetimeAvgMs": 165804495.94425976,
-      "piExecutionAvgMs": 165804495.94425976
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -21111,9 +21111,9 @@
       "recordsProcessed": 181052,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -679416968.356538,
-      "jobLifetimeAvgMs": 1258147530.1712964,
-      "piExecutionAvgMs": 1258147530.1712964
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -21556,7 +21556,7 @@
       "recordsProcessed": 157206,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 323683589.04598176,
+      "jobActivationAvgMs": null,
       "jobLifetimeAvgMs": null,
       "piExecutionAvgMs": null
     },
@@ -21989,9 +21989,9 @@
       "recordsProcessed": 595506,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 430220742.97913986,
-      "jobLifetimeAvgMs": 502165133.590723,
-      "piExecutionAvgMs": 502165133.590723
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 5,
@@ -22434,9 +22434,9 @@
       "recordsProcessed": 1579246,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -32519933.016594633,
-      "jobLifetimeAvgMs": 17839398.72233055,
-      "piExecutionAvgMs": 17839398.72233055
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 13,
@@ -23787,9 +23787,9 @@
       "recordsProcessed": 1609638,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -123819221.72358325,
-      "jobLifetimeAvgMs": -123804211.49713406,
-      "piExecutionAvgMs": -123804211.49713406
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 5,
@@ -25238,9 +25238,9 @@
       "recordsProcessed": 2013480,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 133887149.54133143,
-      "jobLifetimeAvgMs": -26107727.264305763,
-      "piExecutionAvgMs": -26107727.264305763
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -26591,9 +26591,9 @@
       "recordsProcessed": 2015380,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 145533126.36480924,
-      "jobLifetimeAvgMs": 145538420.79885018,
-      "piExecutionAvgMs": 145538420.79885018
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 12,
@@ -28045,9 +28045,9 @@
       "recordsProcessed": 2015386,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 110377419.7776135,
-      "jobLifetimeAvgMs": -144574338.1464629,
-      "piExecutionAvgMs": -144574338.1464629
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -28328,9 +28328,9 @@
       "recordsProcessed": 623010,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 446358553.0868344,
-      "jobLifetimeAvgMs": -859899160.0219421,
-      "piExecutionAvgMs": -859899160.0219421
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -28613,9 +28613,9 @@
       "recordsProcessed": 2056630,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 163121705.9276806,
-      "jobLifetimeAvgMs": 422692050.8016614,
-      "piExecutionAvgMs": 422692050.8016614
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -28896,9 +28896,9 @@
       "recordsProcessed": 1701094,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 121347743.26849599,
-      "jobLifetimeAvgMs": -149834979.78690585,
-      "piExecutionAvgMs": -149834979.78690585
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -29187,9 +29187,9 @@
       "recordsProcessed": 2053974,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -73034897.05381389,
-      "jobLifetimeAvgMs": 249747031.79846048,
-      "piExecutionAvgMs": 249747031.79846048
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 8,
@@ -29290,9 +29290,9 @@
       "recordsProcessed": 334870,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 1562931999.79237,
-      "jobLifetimeAvgMs": 1562938643.0831485,
-      "piExecutionAvgMs": 1562938643.0831485
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 7,
@@ -29396,9 +29396,9 @@
       "recordsProcessed": 673356,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -467068579.3431647,
-      "jobLifetimeAvgMs": -353330454.6997436,
-      "piExecutionAvgMs": -353330454.6997436
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -29525,9 +29525,9 @@
       "recordsProcessed": 1765610,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 65501826.73714751,
-      "jobLifetimeAvgMs": -357766760.00375473,
-      "piExecutionAvgMs": -357766760.00375473
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -29708,9 +29708,9 @@
       "recordsProcessed": 318054,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -135159057.93867928,
-      "jobLifetimeAvgMs": 1554334632.4272194,
-      "piExecutionAvgMs": 1554334632.4272194
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -29903,9 +29903,9 @@
       "recordsProcessed": 1678662,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -2105558.5621546847,
-      "jobLifetimeAvgMs": 221826645.45055202,
-      "piExecutionAvgMs": 221826645.45055202
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -30086,9 +30086,9 @@
       "recordsProcessed": 1156808,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 81857282.34467596,
-      "jobLifetimeAvgMs": 170173967.3191072,
-      "piExecutionAvgMs": 170173967.3191072
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -30284,9 +30284,9 @@
       "recordsProcessed": 1651378,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -330309345.7517662,
-      "jobLifetimeAvgMs": 122420288.56583667,
-      "piExecutionAvgMs": 122420288.56583667
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -30797,9 +30797,9 @@
       "recordsProcessed": 1220690,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -54627298.17172382,
-      "jobLifetimeAvgMs": -187895295.42179084,
-      "piExecutionAvgMs": -187895295.42179084
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -31310,9 +31310,9 @@
       "recordsProcessed": 2033930,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -279550979.8853716,
-      "jobLifetimeAvgMs": -18554366.011609137,
-      "piExecutionAvgMs": -18554366.011609137
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 3,
@@ -31823,9 +31823,9 @@
       "recordsProcessed": 2036078,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 426294325.14521855,
-      "jobLifetimeAvgMs": 426321128.744707,
-      "piExecutionAvgMs": 426321128.744707
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 7,
@@ -32346,9 +32346,9 @@
       "recordsProcessed": 2032956,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -122212234.60993661,
-      "jobLifetimeAvgMs": 202275035.339193,
-      "piExecutionAvgMs": 202275035.339193
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 6,
@@ -32659,9 +32659,9 @@
       "recordsProcessed": 617728,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -92277987.04513842,
-      "jobLifetimeAvgMs": 361940538.8029394,
-      "piExecutionAvgMs": 361940538.8029394
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 12,
@@ -33000,9 +33000,9 @@
       "recordsProcessed": 2045566,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -181596045.20866027,
-      "jobLifetimeAvgMs": 107049383.8853812,
-      "piExecutionAvgMs": 107049383.8853812
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 7,
@@ -33313,9 +33313,9 @@
       "recordsProcessed": 2042406,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 128816289.86456111,
-      "jobLifetimeAvgMs": 58658982.61551898,
-      "piExecutionAvgMs": 58658982.61551898
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -33656,9 +33656,9 @@
       "recordsProcessed": 2043200,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 208553669.40387762,
-      "jobLifetimeAvgMs": 38791574.16182814,
-      "piExecutionAvgMs": 38791574.16182814
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 7,
@@ -33809,9 +33809,9 @@
       "recordsProcessed": 126102,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -194599875.29403058,
-      "jobLifetimeAvgMs": 165655471.01918435,
-      "piExecutionAvgMs": 165655471.01918435
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -33969,9 +33969,9 @@
       "recordsProcessed": 429032,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 839575754.2250851,
-      "jobLifetimeAvgMs": -1818298993.6617596,
-      "piExecutionAvgMs": -1818298993.6617596
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -34162,9 +34162,9 @@
       "recordsProcessed": 251978,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -671119267.1409968,
-      "jobLifetimeAvgMs": -2294245043.0919905,
-      "piExecutionAvgMs": -2294245043.0919905
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -34355,9 +34355,9 @@
       "recordsProcessed": 1354670,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -77198699.2612627,
-      "jobLifetimeAvgMs": 134482585.22551638,
-      "piExecutionAvgMs": 134482585.22551638
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 9,
@@ -34560,9 +34560,9 @@
       "recordsProcessed": 1938526,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 147601956.29546857,
-      "jobLifetimeAvgMs": -68639394.85247198,
-      "piExecutionAvgMs": -68639394.85247198
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -35263,9 +35263,9 @@
       "recordsProcessed": 1514044,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 148023597.15592846,
-      "jobLifetimeAvgMs": -481792339.54341245,
-      "piExecutionAvgMs": -481792339.54341245
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -36016,9 +36016,9 @@
       "recordsProcessed": 2025820,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 3935610.9996695896,
-      "jobLifetimeAvgMs": -356992115.8474478,
-      "piExecutionAvgMs": -286205147.3354055
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 4,
@@ -36719,9 +36719,9 @@
       "recordsProcessed": 2021118,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 246223863.66902187,
-      "jobLifetimeAvgMs": 246226375.2581298,
-      "piExecutionAvgMs": 246226375.2581298
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 5,
@@ -37475,9 +37475,9 @@
       "recordsProcessed": 2022268,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 129332789.57729167,
-      "jobLifetimeAvgMs": 70493253.63970596,
-      "piExecutionAvgMs": 70493253.63970596
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 4,
@@ -38678,9 +38678,9 @@
       "recordsProcessed": 2052030,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -311419502.5527665,
-      "jobLifetimeAvgMs": -311506527.963825,
-      "piExecutionAvgMs": -311506527.963825
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 7,
@@ -39881,9 +39881,9 @@
       "recordsProcessed": 2023564,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -99458544.1469613,
-      "jobLifetimeAvgMs": -99457492.64983381,
-      "piExecutionAvgMs": -99457492.64983381
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 3,
@@ -41084,9 +41084,9 @@
       "recordsProcessed": 2021790,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -373749984.5136617,
-      "jobLifetimeAvgMs": -373748445.29007727,
-      "piExecutionAvgMs": -373748445.29007727
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 4,
@@ -42287,9 +42287,9 @@
       "recordsProcessed": 2021152,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -464806066.9304813,
-      "jobLifetimeAvgMs": -365939282.0788105,
-      "piExecutionAvgMs": -365939282.0788105
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 3,
@@ -44640,9 +44640,9 @@
       "recordsProcessed": 2037780,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -166387717.833717,
-      "jobLifetimeAvgMs": -74548889.53655557,
-      "piExecutionAvgMs": -74548889.53655557
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 4,
@@ -46993,9 +46993,9 @@
       "recordsProcessed": 2028784,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -461845557.11000943,
-      "jobLifetimeAvgMs": -461843753.2359605,
-      "piExecutionAvgMs": -461843753.2359605
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 3,
@@ -49346,9 +49346,9 @@
       "recordsProcessed": 2027898,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -458842431.92099565,
-      "jobLifetimeAvgMs": -458931046.7844947,
-      "piExecutionAvgMs": -458931046.7844947
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 3,
@@ -51699,9 +51699,9 @@
       "recordsProcessed": 2031378,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -457078914.0348131,
-      "jobLifetimeAvgMs": -457077092.6350168,
-      "piExecutionAvgMs": -457077092.6350168
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 3,
@@ -52102,9 +52102,9 @@
       "recordsProcessed": 554206,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 157624479.27356765,
-      "jobLifetimeAvgMs": -643352823.024351,
-      "piExecutionAvgMs": -643352823.024351
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -52527,9 +52527,9 @@
       "recordsProcessed": 2020580,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 146126850.07296568,
-      "jobLifetimeAvgMs": -33895785.77305935,
-      "piExecutionAvgMs": -33895785.77305935
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 3,
@@ -52930,9 +52930,9 @@
       "recordsProcessed": 2029502,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -377769778.68393505,
-      "jobLifetimeAvgMs": -413466895.59421486,
-      "piExecutionAvgMs": -413466895.59421486
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 8,
@@ -53362,9 +53362,9 @@
       "recordsProcessed": 2066844,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -145256740.3546208,
-      "jobLifetimeAvgMs": -180961632.07593408,
-      "piExecutionAvgMs": -180961632.07593408
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 5,
@@ -53585,9 +53585,9 @@
       "recordsProcessed": 30398,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -3712587936.47131,
-      "jobLifetimeAvgMs": -168024792682.1107,
-      "piExecutionAvgMs": -168024792682.1107
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 8,
@@ -53812,7 +53812,7 @@
       "recordsProcessed": 48874,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 2082697434.403689,
+      "jobActivationAvgMs": null,
       "jobLifetimeAvgMs": null,
       "piExecutionAvgMs": null
     },
@@ -54055,9 +54055,9 @@
       "recordsProcessed": 106430,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -833963764.7309157,
-      "jobLifetimeAvgMs": 8742091.762004934,
-      "piExecutionAvgMs": 8742091.762004934
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 9,
@@ -54305,9 +54305,9 @@
       "recordsProcessed": 110262,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -1024515832.8424779,
-      "jobLifetimeAvgMs": -25947221409.489784,
-      "piExecutionAvgMs": -25947221409.489784
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -54548,9 +54548,9 @@
       "recordsProcessed": 518510,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 493573104.2815683,
-      "jobLifetimeAvgMs": -499946952.5129655,
-      "piExecutionAvgMs": -499946952.5129655
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -54797,9 +54797,9 @@
       "recordsProcessed": 1717816,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -78853355.98111849,
-      "jobLifetimeAvgMs": -418421228.29371035,
-      "piExecutionAvgMs": -418421228.29371035
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -55100,9 +55100,9 @@
       "recordsProcessed": 264506,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": 841188069.2660888,
-      "jobLifetimeAvgMs": 1928021554.5961268,
-      "piExecutionAvgMs": 1928021554.5961268
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 11,
@@ -55416,9 +55416,9 @@
       "recordsProcessed": 2057346,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -161163396.8096109,
-      "jobLifetimeAvgMs": 146084545.26195747,
-      "piExecutionAvgMs": 146084545.26195747
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 7,
@@ -55719,9 +55719,9 @@
       "recordsProcessed": 1612342,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -169489734.3525787,
-      "jobLifetimeAvgMs": -2349492.0352348606,
-      "piExecutionAvgMs": -2349492.0352348606
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 9,
@@ -56037,9 +56037,9 @@
       "recordsProcessed": 2104572,
       "backpressureLimit": 0,
       "backpressureInflight": 0,
-      "jobActivationAvgMs": -130697310.64049393,
-      "jobLifetimeAvgMs": -214244683.04579425,
-      "piExecutionAvgMs": -214244683.04579425
+      "jobActivationAvgMs": null,
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 10,
@@ -57391,8 +57391,8 @@
       "backpressureLimit": 0,
       "backpressureInflight": 0,
       "jobActivationAvgMs": 702699.161889188,
-      "jobLifetimeAvgMs": 64048479.9188034,
-      "piExecutionAvgMs": 64048479.9188034
+      "jobLifetimeAvgMs": null,
+      "piExecutionAvgMs": null
     },
     "serverResourceUsage": {
       "samples": 4,
