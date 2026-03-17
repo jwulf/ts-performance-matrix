@@ -18,7 +18,7 @@ import os
 import resource
 import sys
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 
 from camunda_orchestration_sdk import CamundaAsyncClient
@@ -93,7 +93,7 @@ class SimHandler(BaseHTTPRequestHandler):
 
 
 def start_http_sim_server(latency_ms: int) -> int:
-    server = HTTPServer(("127.0.0.1", 0), SimHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), SimHandler)
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -212,8 +212,8 @@ async def run_rest(http_sim_port: int):
             max_concurrent_jobs=ACTIVATE_BATCH * NUM_WORKERS,
         )
 
-        # HTTP client for sim server calls
-        http_client = httpx.AsyncClient() if (HANDLER_TYPE == "http" and http_sim_port > 0) else None
+        # HTTP client for sim server calls — generous timeout for 200ms handler
+        http_client = httpx.AsyncClient(timeout=5.0) if (HANDLER_TYPE == "http" and http_sim_port > 0) else None
 
         async def handler(job):
             nonlocal done
@@ -297,7 +297,7 @@ async def run_rest_threaded(http_sim_port: int):
                 if HANDLER_TYPE == "cpu" and HANDLER_LATENCY_MS > 0:
                     cpu_work(HANDLER_LATENCY_MS)
                 elif HANDLER_TYPE == "http" and http_sim_port > 0:
-                    urllib.request.urlopen(f"http://127.0.0.1:{http_sim_port}/work")
+                    urllib.request.urlopen(f"http://127.0.0.1:{http_sim_port}/work", timeout=5)
 
                 # Round-robin: assign to worker with fewest completions
                 min_idx = min(range(NUM_WORKERS), key=lambda i: worker_completed[i])
