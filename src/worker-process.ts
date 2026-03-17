@@ -25,7 +25,11 @@
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { Worker, isMainThread, parentPort } from 'node:worker_threads';
+
+// ESM compat: __filename is not available in ESM mode (tsx --import)
+const __filename = fileURLToPath(import.meta.url);
 
 // ─── Config ──────────────────────────────────────────────
 
