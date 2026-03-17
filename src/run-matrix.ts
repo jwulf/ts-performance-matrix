@@ -31,6 +31,7 @@ import {
   SDK_MODES,
   SDK_LANGUAGES,
   DEFAULT_TARGET_PER_WORKER,
+  DEFAULT_HANDLER_LATENCY_MS,
   DEFAULT_SCENARIO_TIMEOUT_S,
   DEFAULT_PRE_CREATE_COUNT,
 } from './config.js';
@@ -217,6 +218,7 @@ interface RunMetadata {
   scenariosCompleted: number;
   lanes: number;
   sdkVersions: SdkVersions;
+  handlerLatencyMs: number;
   cliArgs: Record<string, string | boolean | undefined>;
   gcpProject?: string;
   gcpZone?: string;
@@ -419,6 +421,7 @@ async function runLocal(): Promise<void> {
     scenariosCompleted: 0,
     lanes: 1,
     sdkVersions: collectSdkVersions(),
+    handlerLatencyMs: DEFAULT_HANDLER_LATENCY_MS,
     cliArgs: {
       local: true,
       resume: argv.resume as boolean | undefined,
@@ -515,6 +518,7 @@ async function runGcp(): Promise<void> {
     scenariosCompleted: 0,
     lanes,
     sdkVersions: collectSdkVersions(),
+    handlerLatencyMs: DEFAULT_HANDLER_LATENCY_MS,
     cliArgs: {
       resume: argv.resume as boolean | undefined,
       languages: str(argv.languages),

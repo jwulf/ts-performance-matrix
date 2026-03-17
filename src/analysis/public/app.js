@@ -516,6 +516,9 @@ async function renderRunSummary(runId, scenarios) {
     if (meta && meta.mode) {
       html += item('Mode', meta.mode, '');
     }
+    if (meta && meta.handlerLatencyMs != null) {
+      html += item('Workload Latency', `${meta.handlerLatencyMs}ms`, '');
+    }
   } catch { /* metadata not available — that's fine */ }
 
   itemsEl.innerHTML = html;

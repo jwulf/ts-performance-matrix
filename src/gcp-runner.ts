@@ -550,7 +550,7 @@ function workerStartupScript(
   const envBlock = `WORKER_PROCESS_ID=${workerId} \\
 SDK_MODE=${config.sdkMode} \\
 HANDLER_TYPE=${config.handlerType} \\
-HANDLER_LATENCY_MS=200 \\
+HANDLER_LATENCY_MS=20 \\
 NUM_WORKERS=${config.numWorkers} \\
 TARGET_PER_WORKER=${config.targetPerWorker} \\
 ACTIVATE_BATCH=32 \\

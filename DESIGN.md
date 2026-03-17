@@ -60,7 +60,7 @@ throughput = f(total_workers, workers_per_process, sdk_mode, handler_type, clust
 | **Total workers (W)** | 10, 20, 50, 100 | Small team → medium → large deployment → backpressure stress test |
 | **Workers per process (WPP)** | 1, 2, 5, 10, 25, 50 | Granular sweep from full isolation to full sharing |
 | **SDK mode** | `rest`, `rest-threaded`, `grpc-streaming`, `grpc-poll` | Four competitive modes (not all languages support all modes) |
-| **Handler type** | `cpu`, `http` | CPU-bound (200ms busy-loop) vs I/O-bound (200ms async wait) |
+| **Handler type** | `cpu`, `http` | CPU-bound (20ms busy-loop) vs I/O-bound (20ms async wait) |
 | **Cluster** | `1broker`, `3broker` | Single vs distributed broker |
 
 Not every (W, WPP) combination is valid — WPP must divide W evenly, and WPP ≤ W.
@@ -170,7 +170,7 @@ The matrix tests four Camunda 8 client SDKs across two distinct SDK packages for
 
 ### Java (`io.camunda:camunda-client-java`)
 
-- **Thread pool**: The SDK uses a configurable execution thread pool (`numJobWorkerExecutionThreads`). Each handler runs on a dedicated thread from this pool. **This must be set explicitly** — the default is 1 thread, which serializes all handler execution (limiting throughput to ~5 jobs/s with 200ms handlers).
+- **Thread pool**: The SDK uses a configurable execution thread pool (`numJobWorkerExecutionThreads`). Each handler runs on a dedicated thread from this pool. **This must be set explicitly** — the default is 1 thread, which serializes all handler execution (limiting throughput to ~50 jobs/s with 20ms handlers).
 - **gRPC native**: Java is the original gRPC SDK. Streaming mode uses the broker's job push stream; polling mode uses the `ActivateJobs` RPC.
 - **REST support**: Added more recently, uses the same HTTP client internally.
 - **Completion model**: `newCompleteCommand(job).send()` returns a `CompletableFuture`. Blocking with `.join()` in the handler causes carrier-thread pinning and deadlock at high concurrency, so the benchmark uses `.whenComplete()` (fire-and-forget with error callback).
@@ -191,7 +191,7 @@ single most important variable affecting throughput comparisons:
 
 **Why `ACTIVATE_BATCH × NUM_WORKERS`**: All SDKs now use the same formula — one execution slot
 per activated job. Java's execution thread pool is set to match its activation buffer so that
-I/O-bound handlers (e.g. 200ms HTTP calls) run concurrently at full capacity rather than
+I/O-bound handlers (e.g. 20ms HTTP calls) run concurrently at full capacity rather than
 queuing behind a smaller thread pool.
 
 **Java thread cap**: Unlike the other SDKs (which use async tasks, event loops, or green threads),
@@ -204,13 +204,13 @@ VMs, which is ample for I/O-bound handlers while preventing OOM/scheduler thrash
 > separately in a later run to quantify the throughput impact of different concurrency caps
 > (e.g. WPP, 2×WPP, 16×WPP, 32×WPP) across SDKs and handler types.
 
-**Impact on I/O-bound (HTTP) handlers** (WPP=10, 200ms `sleep`/`await`):
-- All SDKs: 320 concurrent I/O waits × 5 completions/s = **1,600 jobs/s max**
+**Impact on I/O-bound (HTTP) handlers** (WPP=10, 20ms `sleep`/`await`):
+- All SDKs: 320 concurrent I/O waits × 50 completions/s = **16,000 jobs/s max**
 - TS: limited by event loop if CPU-bound work is mixed in
 
-**Impact on CPU-bound handlers** (WPP=10, 200ms busy-loop, 2 vCPU VM):
-- All SDKs: bottlenecked by 2 real cores → **~10 jobs/s** regardless of concurrency cap
-- TS (non-threaded): 1 event loop thread → **~5 jobs/s**
+**Impact on CPU-bound handlers** (WPP=10, 20ms busy-loop, 2 vCPU VM):
+- All SDKs: bottlenecked by 2 real cores → **~100 jobs/s** regardless of concurrency cap
+- TS (non-threaded): 1 event loop thread → **~50 jobs/s**
 
 The asymmetry primarily affects **CPU-bound workloads**, where the TS event loop serialises
 handlers while other SDKs parallelise across cores. For I/O-bound workloads all SDKs now
@@ -466,17 +466,17 @@ pool sizing.
 
 ### Handler Latency
 
-Every scenario runs with a **200ms simulated workload**, regardless of handler type:
+Every scenario runs with a **20ms simulated workload**, regardless of handler type:
 
 | Handler Type | Simulation Method | Duration |
 |---|---|---|
-| `cpu` | Busy-loop (`Math.sin` / equivalent) burns CPU for the configured duration | 200ms |
-| `http` | `Thread.sleep` / `setTimeout` / equivalent simulates async I/O wait | 200ms |
+| `cpu` | Busy-loop (`Math.sin` / equivalent) burns CPU for the configured duration | 20ms |
+| `http` | `Thread.sleep` / `setTimeout` / equivalent simulates async I/O wait | 20ms |
 
-The latency is passed to workers via the `HANDLER_LATENCY_MS` environment variable (always `200`).
+The latency is passed to workers via the `HANDLER_LATENCY_MS` environment variable (always `20`).
 The constant `DEFAULT_HANDLER_LATENCY_MS` in `src/config.ts` is the single source of truth.
 
-The difference between the two handler types is *how* the 200ms is spent:
+The difference between the two handler types is *how* the 20ms is spent:
 - **CPU handlers** keep the execution thread busy (CPU-bound).
 - **HTTP handlers** release the execution thread during the wait (I/O-bound), allowing the
   runtime to schedule other work on that thread.
@@ -503,7 +503,7 @@ key parameters controlling concurrency are:
 | Java | `.numJobWorkerExecutionThreads(min(ACTIVATE_BATCH × NUM_WORKERS, CPUs × 100))` | Capped to avoid OS thread explosion on small VMs. On 2-vCPU: max 200 threads |
 
 The Java thread pool setting is critical: without it, a single execution thread processes
-handlers sequentially. With 200ms handler latency this limits throughput to ~5 jobs/s regardless
+handlers sequentially. With 20ms handler latency this limits throughput to ~50 jobs/s regardless
 of `NUM_WORKERS`. Setting it to `ACTIVATE_BATCH × NUM_WORKERS` (with a CPU-based cap) allows
 I/O-bound handlers to run at full concurrency while preventing thread explosion at high WPP.
 

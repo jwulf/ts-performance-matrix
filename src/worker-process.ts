@@ -9,7 +9,7 @@
  *   WORKER_PROCESS_ID     — unique process identifier (e.g., "process-0")
  *   SDK_MODE              — rest | rest-threaded | grpc-streaming | grpc-polling
  *   HANDLER_TYPE          — cpu | http
- *   HANDLER_LATENCY_MS    — handler simulation latency (default: 0 for cpu, 200 for http)
+ *   HANDLER_LATENCY_MS    — handler simulation latency (default: 20 for all types)
  *   NUM_WORKERS           — number of workers in this process (WPP)
  *   TARGET_PER_WORKER     — completions target per worker (default: 10000)
  *   ACTIVATE_BATCH        — maxJobsToActivate per poll (default: 32)
@@ -36,7 +36,7 @@ const __filename = fileURLToPath(import.meta.url);
 const PROCESS_ID = process.env.WORKER_PROCESS_ID || 'process-0';
 const SDK_MODE = (process.env.SDK_MODE || 'rest') as 'rest' | 'rest-threaded' | 'grpc-streaming' | 'grpc-polling';
 const HANDLER_TYPE = (process.env.HANDLER_TYPE || 'cpu') as 'cpu' | 'http';
-const HANDLER_LATENCY_MS = parseInt(process.env.HANDLER_LATENCY_MS || '200', 10);
+const HANDLER_LATENCY_MS = parseInt(process.env.HANDLER_LATENCY_MS || '20', 10);
 const NUM_WORKERS = parseInt(process.env.NUM_WORKERS || '1', 10);
 const TARGET_PER_WORKER = parseInt(process.env.TARGET_PER_WORKER || '10000', 10);
 const ACTIVATE_BATCH = parseInt(process.env.ACTIVATE_BATCH || '32', 10);

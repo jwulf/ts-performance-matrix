@@ -47,7 +47,7 @@ export interface ScenarioConfig {
 // ─── Defaults ────────────────────────────────────────────
 
 export const DEFAULT_TARGET_PER_WORKER = 10_000;
-export const DEFAULT_HANDLER_LATENCY_MS = 200; // for all handler types
+export const DEFAULT_HANDLER_LATENCY_MS = 20; // for all handler types
 export const DEFAULT_ACTIVATE_BATCH = 32;
 export const DEFAULT_SCENARIO_TIMEOUT_S = 300;
 export const DEFAULT_PAYLOAD_SIZE_KB = 10;

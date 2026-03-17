@@ -29,7 +29,7 @@ from camunda_orchestration_sdk.runtime.job_worker import WorkerConfig
 PROCESS_ID = os.environ.get("WORKER_PROCESS_ID", "process-0")
 SDK_MODE = os.environ.get("SDK_MODE", "rest")
 HANDLER_TYPE = os.environ.get("HANDLER_TYPE", "cpu")
-HANDLER_LATENCY_MS = int(os.environ.get("HANDLER_LATENCY_MS", "200"))
+HANDLER_LATENCY_MS = int(os.environ.get("HANDLER_LATENCY_MS", "20"))
 NUM_WORKERS = int(os.environ.get("NUM_WORKERS", "1"))
 TARGET_PER_WORKER = int(os.environ.get("TARGET_PER_WORKER", "10000"))
 ACTIVATE_BATCH = int(os.environ.get("ACTIVATE_BATCH", "32"))
