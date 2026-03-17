@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Matrix Run Analysis</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Top Bar -->
+  <div class="topbar">
+    <h1>Matrix Analysis</h1>
+    <select id="run-select">
+      <option value="">Loading runs...</option>
+    </select>
+    <button id="refresh-btn" title="Force re-fetch from GCS">Refresh</button>
+    <span id="status" class="status"></span>
+  </div>
+
+  <!-- View Tabs -->
+  <div class="tab-bar" id="view-tabs">
+    <button class="active" data-tab="explorer">Explorer</button>
+    <button data-tab="comparison">Comparison</button>
+  </div>
+
+  <!-- Saved Views Bar -->
+  <div class="saved-views-bar" id="saved-views-bar">
+    <span class="label">Views:</span>
+    <div id="saved-views-list"></div>
+    <button class="save-view-btn" id="save-view-btn" title="Save current filters and settings as a named view">+ Save View</button>
+  </div>
+
+  <!-- Main Layout -->
+  <div class="main">
+
+    <!-- Sidebar (Explorer filters) -->
+    <div class="sidebar" id="sidebar">
+      <div id="filter-groups"></div>
+    </div>
+
+    <!-- Content Area -->
+    <div class="content">
+
+      <!-- Metric Column Toggles -->
+      <div class="metric-toggles" id="metric-toggles"></div>
+
+      <!-- Comparison Controls (hidden in explorer mode) -->
+      <div class="comparison-controls hidden" id="comparison-controls">
+        <div class="control-group">
+          <label>Group By</label>
+          <select id="group-by">
+            <option value="">None</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label>Sort By</label>
+          <select id="sort-by">
+            <option value="aggregateThroughput">Throughput</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label>Order</label>
+          <select id="sort-order">
+            <option value="desc">Descending</option>
+            <option value="asc">Ascending</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Data Table -->
+      <div class="table-container" id="table-container">
+        <div class="loading" id="loading-msg">Select a run to begin</div>
+        <table class="hidden" id="data-table">
+          <thead><tr id="table-head"></tr></thead>
+          <tbody id="table-body"></tbody>
+        </table>
+      </div>
+
+      <!-- Output Format Section -->
+      <div class="output-section hidden" id="output-section">
+        <div class="output-tabs" id="output-tabs">
+          <button class="active" data-format="html">HTML</button>
+          <button data-format="markdown">Markdown</button>
+          <button data-format="slack">Slack</button>
+        </div>
+        <div class="output-content" id="output-content"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading Overlay -->
+  <div id="loading-overlay" class="loading-overlay hidden">
+    <div class="loading-card">
+      <div class="spinner"></div>
+      <div class="loading-title" id="loading-title">Loading run data...</div>
+      <div class="loading-log" id="loading-log"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

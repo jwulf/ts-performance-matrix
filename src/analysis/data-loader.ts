@@ -1,0 +1,263 @@
+/**
+ * Data loader — serves run data from local committed files, /tmp cache, or GCS.
+ *
+ * Priority: local repo data → /tmp cache → GCS fetch.
+ * If gsutil is unavailable, only local + cached data are served.
+ */
+
+import { execSync } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+
+const BUCKET = 'camunda-perf-matrix';
+const CACHE_DIR = '/tmp/analysis-cache';
+const LOCAL_DATA_DIR = path.resolve(import.meta.dirname, '../../..', 'results', 'runs');
+
+function log(msg: string): void {
+  console.log(`[${new Date().toISOString()}] [data-loader] ${msg}`);
+}
+
+export interface RunInfo {
+  runId: string;
+  timestamp: number;
+  lanes: number;
+  source: 'local' | 'cache' | 'gcs';
+}
+
+/** Check once whether gsutil is usable. */
+let _gsutilAvailable: boolean | null = null;
+function hasGsutil(): boolean {
+  if (_gsutilAvailable !== null) return _gsutilAvailable;
+  try {
+    execSync('gsutil version', { encoding: 'utf-8', timeout: 5_000, stdio: ['pipe', 'pipe', 'pipe'] });
+    _gsutilAvailable = true;
+    log('gsutil: available');
+  } catch {
+    _gsutilAvailable = false;
+    log('gsutil: NOT available — will serve local/cached data only');
+  }
+  return _gsutilAvailable;
+}
+
+function ensureCacheDir(): void {
+  fs.mkdirSync(CACHE_DIR, { recursive: true });
+}
+
+function gsutil(args: string[], timeoutMs = 30_000): string {
+  const cmd = `gsutil ${args.join(' ')}`;
+  const t0 = Date.now();
+  try {
+    const result = execSync(cmd, {
+      encoding: 'utf-8',
+      timeout: timeoutMs,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    log(`  gsutil ${args[0]} OK (${Date.now() - t0}ms, ${result.split('\n').length} lines)`);
+    return result;
+  } catch (e: any) {
+    const elapsed = Date.now() - t0;
+    const stderr = e.stderr ? String(e.stderr).trim().slice(0, 200) : '';
+    log(`  gsutil ${args[0]} FAILED (${elapsed}ms): ${e.message.slice(0, 100)}${stderr ? ' | stderr: ' + stderr : ''}`);
+    return '';
+  }
+}
+
+/**
+ * List local committed runs (results/runs/*.json).
+ */
+function listLocalRuns(): RunInfo[] {
+  if (!fs.existsSync(LOCAL_DATA_DIR)) return [];
+  const files = fs.readdirSync(LOCAL_DATA_DIR).filter((f) => f.startsWith('run-') && f.endsWith('.json'));
+  return files.map((f) => {
+    const runId = f.replace('.json', '');
+    const ts = parseInt(runId.replace('run-', ''), 10);
+    return { runId, timestamp: ts, lanes: 0, source: 'local' as const };
+  });
+}
+
+/**
+ * List cached runs (/tmp/analysis-cache/*.json).
+ */
+function listCachedRuns(): RunInfo[] {
+  if (!fs.existsSync(CACHE_DIR)) return [];
+  const files = fs.readdirSync(CACHE_DIR).filter((f) => f.startsWith('run-') && f.endsWith('.json'));
+  return files.map((f) => {
+    const runId = f.replace('.json', '');
+    const ts = parseInt(runId.replace('run-', ''), 10);
+    return { runId, timestamp: ts, lanes: 0, source: 'cache' as const };
+  });
+}
+
+/**
+ * List all runs from local files, cache, and (if available) GCS.
+ * Deduplicates by runId — local wins over cache wins over GCS.
+ */
+export function listRuns(): RunInfo[] {
+  log('listRuns: scanning sources...');
+  const runMap = new Map<string, RunInfo>();
+
+  // 1. Local committed data (highest priority label)
+  for (const r of listLocalRuns()) {
+    runMap.set(r.runId, r);
+  }
+  log(`listRuns: ${runMap.size} local runs`);
+
+  // 2. Cached data
+  for (const r of listCachedRuns()) {
+    if (!runMap.has(r.runId)) runMap.set(r.runId, r);
+  }
+  log(`listRuns: ${runMap.size} total after cache`);
+
+  // 3. GCS (if available)
+  if (hasGsutil()) {
+    const output = gsutil(['ls', `gs://${BUCKET}/`], 60_000);
+    if (output) {
+      const gcsLanes = new Map<string, { timestamp: number; lanes: Set<number> }>();
+      for (const line of output.split('\n')) {
+        const match = line.match(/run-(\d+)-l(\d+)\/?$/);
+        if (!match) continue;
+        const timestamp = parseInt(match[1], 10);
+        const lane = parseInt(match[2], 10);
+        const runId = `run-${match[1]}`;
+        if (!gcsLanes.has(runId)) gcsLanes.set(runId, { timestamp, lanes: new Set() });
+        gcsLanes.get(runId)!.lanes.add(lane);
+      }
+      for (const [runId, info] of gcsLanes) {
+        if (!runMap.has(runId)) {
+          runMap.set(runId, { runId, timestamp: info.timestamp, lanes: info.lanes.size, source: 'gcs' });
+        } else {
+          // Update lane count even for local/cached entries
+          const existing = runMap.get(runId)!;
+          if (info.lanes.size > existing.lanes) existing.lanes = info.lanes.size;
+        }
+      }
+      log(`listRuns: ${runMap.size} total after GCS`);
+    }
+  }
+
+  const runs = Array.from(runMap.values()).sort((a, b) => b.timestamp - a.timestamp);
+  log(`listRuns: returning ${runs.length} runs`);
+  return runs;
+}
+
+export type ProgressCallback = (msg: string) => void;
+
+/**
+ * Load all scenario results for a run.
+ * Priority: local committed file → /tmp cache → GCS fetch.
+ */
+export function loadRun(runId: string, forceRefresh = false, onProgress?: ProgressCallback): any[] {
+  const t0 = Date.now();
+  const progress = (msg: string) => {
+    log(msg);
+    onProgress?.(msg);
+  };
+  progress(`Loading ${runId}...`);
+
+  // 1. Local committed data (always preferred unless force-refresh from GCS)
+  const localFile = path.join(LOCAL_DATA_DIR, `${runId}.json`);
+  if (!forceRefresh && fs.existsSync(localFile)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(localFile, 'utf-8'));
+      progress(`Serving from local repo data: ${data.length} scenarios`);
+      return data;
+    } catch (e: any) {
+      progress(`Local file corrupt: ${e.message}`);
+    }
+  }
+
+  // 2. /tmp cache
+  ensureCacheDir();
+  const cacheFile = path.join(CACHE_DIR, `${runId}.json`);
+  if (!forceRefresh && fs.existsSync(cacheFile)) {
+    try {
+      const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf-8'));
+      progress(`Serving from cache: ${cached.length} scenarios`);
+      return cached;
+    } catch (e: any) {
+      progress(`Cache corrupt, re-fetching: ${e.message}`);
+    }
+  }
+
+  // 3. GCS fetch
+  if (!hasGsutil()) {
+    progress(`No GCS access and no local/cached data for ${runId}`);
+    return [];
+  }
+
+  // Find all lane directories for this run
+  progress(`Listing bucket to find lanes...`);
+  const output = gsutil(['ls', `gs://${BUCKET}/`], 60_000);
+  if (!output) {
+    progress(`No output from gsutil ls — returning empty`);
+    return [];
+  }
+
+  const timestamp = runId.replace('run-', '');
+  const laneDirs = output.split('\n')
+    .filter((l) => l.includes(`run-${timestamp}-l`))
+    .map((l) => l.trim().replace(/\/$/, ''));
+
+  log(`loadRun: found ${laneDirs.length} lanes for ${runId}`);
+  progress(`Found ${laneDirs.length} lanes`);
+
+  const results: any[] = [];
+  const seen = new Set<string>();
+  let totalScenarioDirs = 0;
+  let skippedNoSummary = 0;
+
+  for (const laneDir of laneDirs) {
+    // List scenarios in this lane
+    const laneLabel = laneDir.split('/').pop();
+    progress(`Scanning ${laneLabel}...`);
+    const scenarioList = gsutil(['ls', `${laneDir}/scenarios/`], 60_000);
+    if (!scenarioList) {
+      progress(`No scenarios in ${laneLabel}`);
+      continue;
+    }
+
+    const scenarioDirs = scenarioList.split('\n')
+      .filter((l) => l.trim().length > 0)
+      .map((l) => l.trim().replace(/\/$/, ''));
+
+    log(`loadRun: ${scenarioDirs.length} scenarios in ${laneLabel}`);
+    totalScenarioDirs += scenarioDirs.length;
+
+    for (const scenarioDir of scenarioDirs) {
+      const scenarioId = scenarioDir.split('/').pop()!;
+      if (seen.has(scenarioId)) continue; // deduplicate across lanes
+
+      // Download scenario-summary.json
+      const summaryPath = `${scenarioDir}/results/scenario-summary.json`;
+      const tmpFile = path.join(CACHE_DIR, `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+
+      try {
+        execSync(`gsutil cp "${summaryPath}" "${tmpFile}"`, {
+          encoding: 'utf-8',
+          timeout: 15_000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        const data = JSON.parse(fs.readFileSync(tmpFile, 'utf-8'));
+        results.push(data);
+        seen.add(scenarioId);
+        progress(`Fetched ${scenarioId} (${results.length} total)`);
+      } catch (e: any) {
+        // Log the actual failure reason
+        const stderr = e.stderr ? String(e.stderr).trim().slice(0, 150) : '';
+        const reason = stderr || e.message.slice(0, 100);
+        log(`loadRun: SKIP ${scenarioId} — ${reason}`);
+        skippedNoSummary++;
+        seen.add(scenarioId); // don't retry from another lane
+      } finally {
+        try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  // Cache the results
+  fs.writeFileSync(cacheFile, JSON.stringify(results, null, 2));
+  const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+  progress(`Done: ${results.length} scenarios loaded, ${skippedNoSummary} skipped (no summary), ${elapsed}s`);
+
+  return results;
+}

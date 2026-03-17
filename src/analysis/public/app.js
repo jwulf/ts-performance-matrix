@@ -1,0 +1,855 @@
+/**
+ * Matrix Analysis — client-side application.
+ *
+ * All filtering, sorting, grouping, and rendering happens in the browser.
+ * The server only provides the raw ScenarioResult[] array.
+ */
+
+// ─── Constants ───────────────────────────────────────────
+
+const DIMENSIONS = [
+  { key: 'cluster', label: 'Cluster' },
+  { key: 'sdkLanguage', label: 'Language' },
+  { key: 'sdkMode', label: 'Mode' },
+  { key: 'handlerType', label: 'Handler' },
+  { key: 'totalWorkers', label: 'Total Workers' },
+  { key: 'workersPerProcess', label: 'Workers/Process' },
+  { key: 'processes', label: 'Processes' },
+];
+
+const BASE_METRICS = [
+  { key: 'aggregateThroughput', label: 'Throughput', format: (v) => v != null ? v.toFixed(1) : '—', unit: 'ops/s' },
+  { key: 'totalCompleted', label: 'Completed', format: (v) => v != null ? v.toLocaleString() : '—' },
+  { key: 'totalErrors', label: 'Errors', format: (v) => v != null ? v.toLocaleString() : '—' },
+  { key: 'errorRate', label: 'Error Rate', format: (v) => v != null ? v.toFixed(2) + '%' : '—', computed: true },
+  { key: 'wallClockS', label: 'Wall Clock', format: (v) => v != null ? v.toFixed(1) + 's' : '—' },
+  { key: 'jainFairness', label: 'Fairness', format: (v) => v != null ? v.toFixed(4) : '—' },
+  { key: 'status', label: 'Status', format: (v) => v || '—' },
+  { key: 'serverCpuAvg', label: 'Srv CPU Avg', format: (v) => v != null ? (v * 100).toFixed(1) + '%' : '—', nested: true },
+  { key: 'serverCpuPeak', label: 'Srv CPU Peak', format: (v) => v != null ? (v * 100).toFixed(1) + '%' : '—', nested: true },
+  { key: 'serverMemAvgMb', label: 'Srv Mem Avg', format: (v) => v != null ? v.toFixed(0) + ' MB' : '—', nested: true },
+  { key: 'serverMemPeakMb', label: 'Srv Mem Peak', format: (v) => v != null ? v.toFixed(0) + ' MB' : '—', nested: true },
+  { key: 'serverThreadsAvg', label: 'Srv Threads', format: (v) => v != null ? Math.round(v).toString() : '—', nested: true },
+  { key: 'clientMemAvgMb', label: 'Client Mem Avg', format: (v) => v != null ? v.toFixed(1) + ' MB' : '—', computed: true },
+  { key: 'clientMemPeakMb', label: 'Client Mem Peak', format: (v) => v != null ? v.toFixed(1) + ' MB' : '—', computed: true },
+];
+
+// Dynamic error category metrics — rebuilt when data loads
+let errorCategoryMetrics = [];
+
+/** All metrics = base + dynamic error categories. */
+function getMetrics() {
+  return [...BASE_METRICS, ...errorCategoryMetrics];
+}
+
+const DEFAULT_VISIBLE_METRICS = new Set([
+  'aggregateThroughput', 'totalCompleted', 'totalErrors', 'wallClockS', 'jainFairness', 'status',
+]);
+
+// ─── State ───────────────────────────────────────────────
+
+let allData = [];          // Raw ScenarioResult[] for current run
+let enrichedData = [];     // With computed fields
+let filteredData = [];     // After dimension filters
+let currentTab = 'explorer';
+let currentOutputFormat = 'html';
+let sortColumn = 'aggregateThroughput';
+let sortAsc = false;
+
+// Filter state: dimension key -> Set of selected values
+const filters = {};
+// Metric visibility: metric key -> boolean
+const visibleMetrics = new Set(DEFAULT_VISIBLE_METRICS);
+
+// ─── localStorage Keys ───────────────────────────────────
+
+const LS_VIEW_STATE = 'matrix-analysis-view-state';
+const LS_SAVED_VIEWS = 'matrix-analysis-saved-views';
+
+// ─── DOM Refs ────────────────────────────────────────────
+
+const runSelect = document.getElementById('run-select');
+const refreshBtn = document.getElementById('refresh-btn');
+const statusEl = document.getElementById('status');
+const filterGroupsEl = document.getElementById('filter-groups');
+const metricTogglesEl = document.getElementById('metric-toggles');
+const comparisonControls = document.getElementById('comparison-controls');
+const tableContainer = document.getElementById('table-container');
+const loadingMsg = document.getElementById('loading-msg');
+const dataTable = document.getElementById('data-table');
+const tableHead = document.getElementById('table-head');
+const tableBody = document.getElementById('table-body');
+const outputSection = document.getElementById('output-section');
+const outputContent = document.getElementById('output-content');
+const groupBySelect = document.getElementById('group-by');
+const sortBySelect = document.getElementById('sort-by');
+const sortOrderSelect = document.getElementById('sort-order');
+const savedViewsList = document.getElementById('saved-views-list');
+const saveViewBtn = document.getElementById('save-view-btn');
+
+// ─── View State Persistence ──────────────────────────────
+
+/** Capture the current view state as a serializable object. */
+function captureViewState() {
+  const filterState = {};
+  for (const dim of DIMENSIONS) {
+    if (filters[dim.key]) {
+      filterState[dim.key] = [...filters[dim.key]];
+    }
+  }
+  return {
+    runId: runSelect.value || null,
+    currentTab,
+    currentOutputFormat,
+    sortColumn,
+    sortAsc,
+    visibleMetrics: [...visibleMetrics],
+    filters: filterState,
+    groupBy: groupBySelect.value || '',
+  };
+}
+
+/** Apply a saved view state object to the UI. */
+function applyViewState(state) {
+  if (!state) return;
+  if (state.currentTab) {
+    currentTab = state.currentTab;
+    document.querySelectorAll('#view-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === currentTab));
+    document.getElementById('sidebar').classList.toggle('hidden', currentTab === 'comparison');
+    comparisonControls.classList.toggle('hidden', currentTab === 'explorer');
+  }
+  if (state.currentOutputFormat) currentOutputFormat = state.currentOutputFormat;
+  if (state.sortColumn) sortColumn = state.sortColumn;
+  if (state.sortAsc !== undefined) sortAsc = state.sortAsc;
+  if (state.visibleMetrics) {
+    visibleMetrics.clear();
+    for (const k of state.visibleMetrics) visibleMetrics.add(k);
+  }
+  // Filters will be restored after data loads (they depend on data values)
+}
+
+/** Restore filter selections from a state snapshot (call after buildFilters). */
+function restoreFiltersFromState(state) {
+  if (!state || !state.filters) return;
+  for (const dim of DIMENSIONS) {
+    if (state.filters[dim.key]) {
+      const allowed = new Set(state.filters[dim.key].map((v) => typeof v === 'string' ? v : v));
+      // Intersect with available values so stale entries don't break anything
+      const available = new Set(enrichedData.map((d) => d[dim.key]));
+      filters[dim.key] = new Set([...allowed].filter((v) => available.has(v)));
+    }
+  }
+  // Sync checkboxes
+  for (const cb of filterGroupsEl.querySelectorAll('input[type="checkbox"]')) {
+    const dimKey = cb.dataset.dim;
+    const val = isNaN(cb.dataset.val) ? cb.dataset.val : Number(cb.dataset.val);
+    cb.checked = filters[dimKey] && filters[dimKey].has(val);
+  }
+  if (state.groupBy !== undefined) groupBySelect.value = state.groupBy;
+}
+
+/** Persist current view state to localStorage (debounced). */
+let _saveTimer = null;
+function persistViewState() {
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => {
+    try { localStorage.setItem(LS_VIEW_STATE, JSON.stringify(captureViewState())); } catch {}
+  }, 300);
+}
+
+function loadPersistedViewState() {
+  try {
+    const raw = localStorage.getItem(LS_VIEW_STATE);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+// ─── Saved (Named) Views ─────────────────────────────────
+
+function getSavedViews() {
+  try {
+    const raw = localStorage.getItem(LS_SAVED_VIEWS);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function setSavedViews(views) {
+  try { localStorage.setItem(LS_SAVED_VIEWS, JSON.stringify(views)); } catch {}
+}
+
+function renderSavedViews() {
+  const views = getSavedViews();
+  savedViewsList.innerHTML = '';
+  for (const v of views) {
+    const chip = document.createElement('span');
+    chip.className = 'view-chip';
+    chip.title = `Load view "${v.name}"`;
+
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = v.name;
+    nameSpan.addEventListener('click', () => loadSavedView(v));
+    chip.appendChild(nameSpan);
+
+    const del = document.createElement('button');
+    del.className = 'delete-view';
+    del.textContent = '\u00d7';
+    del.title = `Delete "${v.name}"`;
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteSavedView(v.name);
+    });
+    chip.appendChild(del);
+
+    savedViewsList.appendChild(chip);
+  }
+}
+
+function saveCurrentView() {
+  const name = prompt('View name:');
+  if (!name || !name.trim()) return;
+  const views = getSavedViews();
+  // Overwrite if same name exists
+  const existing = views.findIndex((v) => v.name === name.trim());
+  const entry = { name: name.trim(), state: captureViewState() };
+  if (existing >= 0) views[existing] = entry;
+  else views.push(entry);
+  setSavedViews(views);
+  renderSavedViews();
+}
+
+function loadSavedView(view) {
+  applyViewState(view.state);
+  // If run changed, load it
+  if (view.state.runId && view.state.runId !== runSelect.value) {
+    runSelect.value = view.state.runId;
+    loadSelectedRun(false, view.state);
+  } else {
+    // Same run — just restore filters and re-render
+    buildMetricToggles();
+    restoreFiltersFromState(view.state);
+    applyFilters();
+    persistViewState();
+  }
+}
+
+function deleteSavedView(name) {
+  const views = getSavedViews().filter((v) => v.name !== name);
+  setSavedViews(views);
+  renderSavedViews();
+}
+
+// ─── Init ────────────────────────────────────────────────
+
+async function init() {
+  // Restore persisted view state
+  const savedState = loadPersistedViewState();
+  if (savedState) applyViewState(savedState);
+
+  // Load run list
+  setStatus('Loading runs...');
+  try {
+    const runs = await fetchJson('/api/runs');
+    populateRunSelect(runs);
+    setStatus(`${runs.length} runs found`);
+
+    // Restore previously selected run
+    if (savedState && savedState.runId) {
+      const opt = [...runSelect.options].find((o) => o.value === savedState.runId);
+      if (opt) {
+        runSelect.value = savedState.runId;
+        loadSelectedRun(false, savedState);
+      }
+    }
+  } catch (e) {
+    setStatus('Error loading runs: ' + e.message);
+  }
+
+  // Event listeners
+  runSelect.addEventListener('change', () => loadSelectedRun(false));
+  refreshBtn.addEventListener('click', () => loadSelectedRun(true));
+
+  // View tabs
+  document.getElementById('view-tabs').addEventListener('click', (e) => {
+    if (e.target.tagName !== 'BUTTON') return;
+    currentTab = e.target.dataset.tab;
+    document.querySelectorAll('#view-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === currentTab));
+    document.getElementById('sidebar').classList.toggle('hidden', currentTab === 'comparison');
+    comparisonControls.classList.toggle('hidden', currentTab === 'explorer');
+    renderTable();
+    persistViewState();
+  });
+
+  // Output format tabs
+  document.getElementById('output-tabs').addEventListener('click', (e) => {
+    if (e.target.tagName !== 'BUTTON') return;
+    currentOutputFormat = e.target.dataset.format;
+    document.querySelectorAll('#output-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.format === currentOutputFormat));
+    renderOutput();
+    persistViewState();
+  });
+
+  // Comparison controls
+  groupBySelect.addEventListener('change', () => { renderTable(); persistViewState(); });
+  sortBySelect.addEventListener('change', () => { sortColumn = sortBySelect.value; renderTable(); persistViewState(); });
+  sortOrderSelect.addEventListener('change', () => { sortAsc = sortOrderSelect.value === 'asc'; renderTable(); persistViewState(); });
+
+  buildMetricToggles();
+
+  // Saved views
+  renderSavedViews();
+  saveViewBtn.addEventListener('click', saveCurrentView);
+}
+
+// ─── Data Loading ────────────────────────────────────────
+
+async function fetchJson(url) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 600_000); // 10 min timeout
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`HTTP ${res.status}: ${body}`);
+    }
+    return res.json();
+  } catch (e) {
+    clearTimeout(timeoutId);
+    if (e.name === 'AbortError') throw new Error('Request timed out (10 min)');
+    throw e;
+  }
+}
+
+function populateRunSelect(runs) {
+  runSelect.innerHTML = '<option value="">Select a run...</option>';
+  for (const run of runs) {
+    const date = new Date(run.timestamp).toLocaleString();
+    const opt = document.createElement('option');
+    opt.value = run.runId;
+    const sourceTag = run.source === 'local' ? ' [local]' : run.source === 'cache' ? ' [cached]' : '';
+    const laneInfo = run.lanes > 0 ? `, ${run.lanes} lanes` : '';
+    opt.textContent = `${run.runId} (${date}${laneInfo})${sourceTag}`;
+    runSelect.appendChild(opt);
+  }
+}
+
+async function loadSelectedRun(refresh, stateToRestore) {
+  const runId = runSelect.value;
+  if (!runId) return;
+
+  // Show loading overlay
+  const overlay = document.getElementById('loading-overlay');
+  const loadingTitle = document.getElementById('loading-title');
+  const loadingLog = document.getElementById('loading-log');
+  overlay.classList.remove('hidden');
+  loadingTitle.textContent = `Loading ${runId}...`;
+  loadingLog.innerHTML = '';
+
+  setStatus('Loading...');
+  loadingMsg.textContent = '';
+  loadingMsg.classList.remove('hidden');
+  dataTable.classList.add('hidden');
+  outputSection.classList.add('hidden');
+
+  function addLogLine(msg) {
+    const line = document.createElement('div');
+    line.className = 'log-line';
+    line.textContent = msg;
+    loadingLog.appendChild(line);
+    loadingLog.scrollTop = loadingLog.scrollHeight;
+  }
+
+  try {
+    const url = `/api/runs/${runId}?stream=1${refresh ? '&refresh=1' : ''}`;
+    const data = await new Promise((resolve, reject) => {
+      const es = new EventSource(url);
+
+      es.addEventListener('progress', (e) => {
+        addLogLine(e.data);
+      });
+
+      es.addEventListener('data', (e) => {
+        es.close();
+        try {
+          resolve(JSON.parse(e.data));
+        } catch (err) {
+          reject(new Error('Failed to parse response data'));
+        }
+      });
+
+      es.addEventListener('error', (e) => {
+        // SSE 'error' event can be a custom one with data or a connection error
+        if (e.data) {
+          es.close();
+          reject(new Error(e.data));
+        } else if (es.readyState === EventSource.CLOSED) {
+          // Connection closed without data event — likely empty result
+          reject(new Error('Connection closed without result'));
+        }
+        // Otherwise it might be a reconnection attempt by the browser — ignore
+      });
+    });
+
+    allData = data;
+    enrichedData = allData.map(enrichScenario);
+    buildErrorCategoryMetrics();
+    buildFilters();
+    buildMetricToggles();
+    if (stateToRestore) restoreFiltersFromState(stateToRestore);
+    applyFilters();
+    setStatus(`${enrichedData.length} scenarios loaded`);
+    overlay.classList.add('hidden');
+    persistViewState();
+  } catch (e) {
+    setStatus('Error: ' + e.message);
+    addLogLine('ERROR: ' + e.message);
+    loadingTitle.textContent = 'Error loading data';
+    // Keep overlay visible for 3s so user can read the error
+    setTimeout(() => overlay.classList.add('hidden'), 5000);
+    loadingMsg.textContent = 'Error loading data: ' + e.message;
+  }
+}
+
+function setStatus(text) {
+  statusEl.textContent = text;
+}
+
+// ─── Data Enrichment ─────────────────────────────────────
+
+function enrichScenario(s) {
+  const enriched = { ...s };
+
+  // Error rate
+  const total = (s.totalCompleted || 0) + (s.totalErrors || 0);
+  enriched.errorRate = total > 0 ? (s.totalErrors / total) * 100 : 0;
+
+  // Server metrics flattened
+  if (s.serverResourceUsage) {
+    enriched.serverCpuAvg = s.serverResourceUsage.cpuAvg;
+    enriched.serverCpuPeak = s.serverResourceUsage.cpuPeak;
+    enriched.serverMemAvgMb = s.serverResourceUsage.memoryUsedAvgMb;
+    enriched.serverMemPeakMb = s.serverResourceUsage.memoryUsedPeakMb;
+    enriched.serverThreadsAvg = s.serverResourceUsage.liveThreadsAvg;
+  } else {
+    enriched.serverCpuAvg = null;
+    enriched.serverCpuPeak = null;
+    enriched.serverMemAvgMb = null;
+    enriched.serverMemPeakMb = null;
+    enriched.serverThreadsAvg = null;
+  }
+
+  // Client memory — aggregate from processResults if they have memoryUsage
+  // Available in runs collected after the memoryUsage fix (older runs lack this field)
+  let memSamples = 0, memSum = 0, memPeak = 0;
+  if (s.processResults) {
+    for (const p of s.processResults) {
+      if (p.memoryUsage) {
+        memSamples++;
+        memSum += p.memoryUsage.avgRssMb || 0;
+        memPeak = Math.max(memPeak, p.memoryUsage.peakRssMb || 0);
+      }
+    }
+  }
+  enriched.clientMemAvgMb = memSamples > 0 ? memSum / memSamples : null;
+  enriched.clientMemPeakMb = memSamples > 0 ? memPeak : null;
+
+  // Error types — aggregate from processResults
+  const mergedErrorTypes = {};
+  if (s.processResults) {
+    for (const p of s.processResults) {
+      if (p.errorTypes) {
+        for (const [errKey, count] of Object.entries(p.errorTypes)) {
+          mergedErrorTypes[errKey] = (mergedErrorTypes[errKey] || 0) + count;
+        }
+      }
+    }
+  }
+  enriched._errorTypes = mergedErrorTypes;
+
+  return enriched;
+}
+
+/**
+ * Discover all error categories across the dataset and rebuild
+ * the dynamic errorCategoryMetrics array.
+ */
+function buildErrorCategoryMetrics() {
+  const categories = new Map(); // short key -> total count across all scenarios
+  for (const s of enrichedData) {
+    if (s._errorTypes) {
+      for (const [errKey, count] of Object.entries(s._errorTypes)) {
+        // Shorten the key for display: take just the class name (before ': ')
+        const shortKey = errKey.includes(': ') ? errKey.split(': ')[0] : errKey;
+        categories.set(shortKey, (categories.get(shortKey) || 0) + count);
+      }
+    }
+  }
+
+  // Sort by total count descending
+  const sorted = [...categories.entries()].sort((a, b) => b[1] - a[1]);
+
+  errorCategoryMetrics = sorted.map(([shortKey]) => ({
+    key: `err_${shortKey}`,
+    label: shortKey,
+    format: (v) => v != null && v > 0 ? v.toLocaleString() : '—',
+    errorCategory: true,
+  }));
+
+  // Flatten per-scenario: for each enriched scenario, add err_XYZ fields
+  for (const s of enrichedData) {
+    for (const m of errorCategoryMetrics) {
+      s[m.key] = 0;
+    }
+    if (s._errorTypes) {
+      for (const [errKey, count] of Object.entries(s._errorTypes)) {
+        const shortKey = errKey.includes(': ') ? errKey.split(': ')[0] : errKey;
+        const metricKey = `err_${shortKey}`;
+        s[metricKey] = (s[metricKey] || 0) + count;
+      }
+    }
+  }
+}
+
+// ─── Filters ─────────────────────────────────────────────
+
+function buildFilters() {
+  filterGroupsEl.innerHTML = '';
+
+  for (const dim of DIMENSIONS) {
+    const values = [...new Set(enrichedData.map((d) => d[dim.key]))].sort((a, b) => {
+      if (typeof a === 'number') return a - b;
+      return String(a).localeCompare(String(b));
+    });
+
+    filters[dim.key] = new Set(values);
+
+    const group = document.createElement('div');
+    group.className = 'filter-group';
+    group.innerHTML = `
+      <h3>
+        ${dim.label}
+        <span class="toggle-btns">
+          <button data-dim="${dim.key}" data-action="all">All</button>
+          <button data-dim="${dim.key}" data-action="none">None</button>
+        </span>
+      </h3>
+    `;
+
+    for (const val of values) {
+      const label = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      cb.dataset.dim = dim.key;
+      cb.dataset.val = String(val);
+      cb.addEventListener('change', () => {
+        if (cb.checked) filters[dim.key].add(val);
+        else filters[dim.key].delete(val);
+        applyFilters();
+        persistViewState();
+      });
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(String(val)));
+      group.appendChild(label);
+    }
+
+    // Toggle buttons
+    group.addEventListener('click', (e) => {
+      if (e.target.tagName !== 'BUTTON') return;
+      const action = e.target.dataset.action;
+      const dimKey = e.target.dataset.dim;
+      const cbs = group.querySelectorAll('input[type="checkbox"]');
+      cbs.forEach((cb) => {
+        cb.checked = action === 'all';
+        if (cb.checked) filters[dimKey].add(isNaN(cb.dataset.val) ? cb.dataset.val : Number(cb.dataset.val));
+        else filters[dimKey].delete(isNaN(cb.dataset.val) ? cb.dataset.val : Number(cb.dataset.val));
+      });
+      // Re-sync the filter set properly
+      const vals = [...new Set(enrichedData.map((d) => d[dimKey]))];
+      if (action === 'all') filters[dimKey] = new Set(vals);
+      else filters[dimKey] = new Set();
+      applyFilters();
+      persistViewState();
+    });
+
+    filterGroupsEl.appendChild(group);
+  }
+
+  // Populate comparison dropdowns
+  populateComparisonControls();
+}
+
+function applyFilters() {
+  filteredData = enrichedData.filter((d) => {
+    for (const dim of DIMENSIONS) {
+      if (!filters[dim.key] || filters[dim.key].size === 0) return false;
+      if (!filters[dim.key].has(d[dim.key])) return false;
+    }
+    return true;
+  });
+  renderTable();
+}
+
+// ─── Metric Toggles ──────────────────────────────────────
+
+function buildMetricToggles() {
+  metricTogglesEl.innerHTML = '';
+  const allMetrics = getMetrics();
+  const baseKeys = new Set(BASE_METRICS.map(m => m.key));
+  let addedErrorHeader = false;
+  for (const m of allMetrics) {
+    // Add a section header before the first error category metric
+    if (!baseKeys.has(m.key) && !addedErrorHeader) {
+      addedErrorHeader = true;
+      const header = document.createElement('div');
+      header.className = 'metric-toggle-header';
+      header.textContent = 'Error Categories';
+      metricTogglesEl.appendChild(header);
+    }
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = visibleMetrics.has(m.key);
+    cb.addEventListener('change', () => {
+      if (cb.checked) visibleMetrics.add(m.key);
+      else visibleMetrics.delete(m.key);
+      renderTable();
+      persistViewState();
+    });
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(m.label));
+    metricTogglesEl.appendChild(label);
+  }
+}
+
+// ─── Comparison Controls ─────────────────────────────────
+
+function populateComparisonControls() {
+  // Group-by options
+  groupBySelect.innerHTML = '<option value="">None</option>';
+  for (const dim of DIMENSIONS) {
+    const opt = document.createElement('option');
+    opt.value = dim.key;
+    opt.textContent = dim.label;
+    groupBySelect.appendChild(opt);
+  }
+
+  // Sort-by options
+  sortBySelect.innerHTML = '';
+  for (const m of getMetrics()) {
+    const opt = document.createElement('option');
+    opt.value = m.key;
+    opt.textContent = m.label;
+    if (m.key === 'aggregateThroughput') opt.selected = true;
+    sortBySelect.appendChild(opt);
+  }
+}
+
+// ─── Table Rendering ─────────────────────────────────────
+
+function renderTable() {
+  if (filteredData.length === 0) {
+    loadingMsg.textContent = enrichedData.length > 0 ? 'No scenarios match current filters' : 'No data loaded';
+    loadingMsg.classList.remove('hidden');
+    dataTable.classList.add('hidden');
+    outputSection.classList.add('hidden');
+    return;
+  }
+
+  loadingMsg.classList.add('hidden');
+  dataTable.classList.remove('hidden');
+  outputSection.classList.remove('hidden');
+
+  // Sort data
+  const sorted = [...filteredData].sort((a, b) => {
+    const va = getMetricValue(a, sortColumn);
+    const vb = getMetricValue(b, sortColumn);
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    const cmp = typeof va === 'string' ? va.localeCompare(vb) : va - vb;
+    return sortAsc ? cmp : -cmp;
+  });
+
+  // Group if comparison tab
+  const groupKey = currentTab === 'comparison' ? groupBySelect.value : '';
+
+  // Build visible columns
+  const dimCols = DIMENSIONS;
+  const metricCols = getMetrics().filter((m) => visibleMetrics.has(m.key));
+
+  // Header
+  tableHead.innerHTML = '';
+  // Copy column header (empty, narrow)
+  const thCopy = document.createElement('th');
+  thCopy.style.cssText = 'width: 28px; padding: 8px 2px;';
+  tableHead.appendChild(thCopy);
+
+  for (const dim of dimCols) {
+    const th = document.createElement('th');
+    th.textContent = dim.label;
+    th.dataset.col = dim.key;
+    th.addEventListener('click', () => toggleSort(dim.key));
+    if (sortColumn === dim.key) th.className = sortAsc ? 'sorted-asc' : 'sorted-desc';
+    tableHead.appendChild(th);
+  }
+  for (const m of metricCols) {
+    const th = document.createElement('th');
+    th.textContent = m.label;
+    th.className = 'num';
+    th.dataset.col = m.key;
+    th.addEventListener('click', () => toggleSort(m.key));
+    if (sortColumn === m.key) th.className = 'num ' + (sortAsc ? 'sorted-asc' : 'sorted-desc');
+    tableHead.appendChild(th);
+  }
+
+  // Body
+  tableBody.innerHTML = '';
+  let lastGroup = null;
+
+  for (const row of sorted) {
+    // Group separator
+    if (groupKey && row[groupKey] !== lastGroup) {
+      lastGroup = row[groupKey];
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = dimCols.length + metricCols.length + 1; // +1 for copy column
+      td.style.cssText = 'background: var(--surface2); font-weight: 600; padding: 8px 10px; color: var(--accent);';
+      td.textContent = `${DIMENSIONS.find((d) => d.key === groupKey)?.label || groupKey}: ${lastGroup}`;
+      tr.appendChild(td);
+      tableBody.appendChild(tr);
+    }
+
+    const tr = document.createElement('tr');
+
+    // Copy ID button cell
+    const tdCopy = document.createElement('td');
+    tdCopy.style.cssText = 'padding: 6px 2px; text-align: center;';
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'copy-id-btn';
+    copyBtn.innerHTML = '\u{1F4CB}';
+    copyBtn.title = `Copy: ${row.scenarioId}`;
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText(row.scenarioId).then(() => {
+        copyBtn.classList.add('copied');
+        copyBtn.innerHTML = '\u2713';
+        setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.innerHTML = '\u{1F4CB}'; }, 1500);
+      });
+    });
+    tdCopy.appendChild(copyBtn);
+    tr.appendChild(tdCopy);
+
+    for (const dim of dimCols) {
+      const td = document.createElement('td');
+      td.textContent = String(row[dim.key]);
+      tr.appendChild(td);
+    }
+
+    for (const m of metricCols) {
+      const td = document.createElement('td');
+      td.className = 'num';
+      const val = getMetricValue(row, m.key);
+      td.textContent = m.format(val);
+
+      // Color status
+      if (m.key === 'status') {
+        td.className = `status-${val}`;
+      }
+      tr.appendChild(td);
+    }
+
+    tableBody.appendChild(tr);
+  }
+
+  renderOutput();
+}
+
+function getMetricValue(row, key) {
+  if (key === 'errorRate') return row.errorRate;
+  if (key === 'clientMemAvgMb') return row.clientMemAvgMb;
+  if (key === 'clientMemPeakMb') return row.clientMemPeakMb;
+  if (key === 'serverCpuAvg') return row.serverCpuAvg;
+  if (key === 'serverCpuPeak') return row.serverCpuPeak;
+  if (key === 'serverMemAvgMb') return row.serverMemAvgMb;
+  if (key === 'serverMemPeakMb') return row.serverMemPeakMb;
+  if (key === 'serverThreadsAvg') return row.serverThreadsAvg;
+  return row[key];
+}
+
+function toggleSort(col) {
+  if (sortColumn === col) sortAsc = !sortAsc;
+  else { sortColumn = col; sortAsc = false; }
+  renderTable();
+  persistViewState();
+}
+
+// ─── Output Rendering ────────────────────────────────────
+
+function renderOutput() {
+  if (filteredData.length === 0) return;
+
+  const dimCols = DIMENSIONS;
+  const metricCols = getMetrics().filter((m) => visibleMetrics.has(m.key));
+
+  const sorted = [...filteredData].sort((a, b) => {
+    const va = getMetricValue(a, sortColumn);
+    const vb = getMetricValue(b, sortColumn);
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    const cmp = typeof va === 'string' ? va.localeCompare(vb) : va - vb;
+    return sortAsc ? cmp : -cmp;
+  });
+
+  const headers = [...dimCols.map((d) => d.label), ...metricCols.map((m) => m.label)];
+  const rows = sorted.map((row) => [
+    ...dimCols.map((d) => String(row[d.key])),
+    ...metricCols.map((m) => m.format(getMetricValue(row, m.key))),
+  ]);
+
+  if (currentOutputFormat === 'html') {
+    // Show the rendered table itself — already visible above
+    outputContent.innerHTML = '<div style="padding: 12px; color: var(--text-muted); font-size: 12px;">The HTML table is rendered above. Use Markdown or Slack tabs to copy.</div>';
+  } else if (currentOutputFormat === 'markdown') {
+    const md = toMarkdown(headers, rows);
+    outputContent.innerHTML = `<textarea readonly>${escapeHtml(md)}</textarea>`;
+  } else if (currentOutputFormat === 'slack') {
+    const slack = toSlack(headers, rows);
+    outputContent.innerHTML = `<textarea readonly>${escapeHtml(slack)}</textarea>`;
+  }
+}
+
+function toMarkdown(headers, rows) {
+  const sep = headers.map(() => '---');
+  const lines = [
+    '| ' + headers.join(' | ') + ' |',
+    '| ' + sep.join(' | ') + ' |',
+    ...rows.map((r) => '| ' + r.join(' | ') + ' |'),
+  ];
+  return lines.join('\n');
+}
+
+function toSlack(headers, rows) {
+  // Fixed-width table for Slack
+  const allRows = [headers, ...rows];
+  const widths = headers.map((_, i) => Math.max(...allRows.map((r) => (r[i] || '').length)));
+
+  const formatRow = (r) => r.map((cell, i) => (cell || '').padEnd(widths[i])).join('  ');
+
+  const lines = [
+    '```',
+    formatRow(headers),
+    widths.map((w) => '─'.repeat(w)).join('  '),
+    ...rows.map(formatRow),
+    '```',
+  ];
+  return lines.join('\n');
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ─── Boot ────────────────────────────────────────────────
+
+init();
