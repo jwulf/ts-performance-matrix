@@ -776,10 +776,11 @@ function renderTable() {
     const copyBtn = document.createElement('button');
     copyBtn.className = 'copy-id-btn';
     copyBtn.innerHTML = '\u{1F4CB}';
-    copyBtn.title = `Copy: ${row.scenarioId}`;
+    const copyText = `${runSelect.value}/${row.scenarioId}`;
+    copyBtn.title = `Copy: ${copyText}`;
     copyBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      navigator.clipboard.writeText(row.scenarioId).then(() => {
+      navigator.clipboard.writeText(copyText).then(() => {
         copyBtn.classList.add('copied');
         copyBtn.innerHTML = '\u2713';
         setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.innerHTML = '\u{1F4CB}'; }, 1500);
