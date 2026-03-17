@@ -21,6 +21,7 @@ export interface ProcessResult {
   perWorkerThroughputs: number[];
   perWorkerCompleted: number[];
   perWorkerErrors: number[];
+  memoryUsage?: { peakRssMb: number; avgRssMb: number; samples: number };
 }
 
 export interface ServerMetrics {
