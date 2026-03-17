@@ -1,5 +1,6 @@
 node_modules
-results
+results/*
+!results/runs/
 src/workers/csharp-worker/bin
 src/workers/csharp-worker/obj
 src/workers/java-worker/target
