@@ -1552,6 +1552,7 @@ export async function runScenarioGcp(
         perWorkerCompleted: data.perWorkerCompleted || [],
         perWorkerErrors: data.perWorkerErrors || [],
         ...(data.memoryUsage ? { memoryUsage: data.memoryUsage } : {}),
+        ...(data.errorTypes ? { errorTypes: data.errorTypes } : {}),
       });
     } catch {
       processResults.push({
