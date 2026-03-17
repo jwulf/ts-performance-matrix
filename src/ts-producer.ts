@@ -24,7 +24,9 @@ const BROKER_REST_URL = process.env.BROKER_REST_URL || 'http://localhost:8080';
 const BPMN_PATH = process.env.BPMN_PATH || '';
 const PRECREATE_COUNT = parseInt(process.env.PRECREATE_COUNT || '0', 10);
 const PAYLOAD_SIZE_KB = parseInt(process.env.PAYLOAD_SIZE_KB || '10', 10);
-const CONCURRENCY = 200;
+const PRECREATE_CONCURRENCY = 200;
+const CONTINUOUS_BATCH = 10;
+const CONTINUOUS_INTERVAL_MS = 5000;
 const CONTINUOUS = process.env.CONTINUOUS === '1';
 const READY_FILE = process.env.READY_FILE || '';
 const GO_FILE = process.env.GO_FILE || '';
@@ -48,7 +50,7 @@ async function createBatch(
   console.log(`[ts-producer] ${label}: creating ${count} instances...`);
 
   while (created + errors < count) {
-    while (inflight.length < CONCURRENCY && created + errors + inflight.length < count) {
+    while (inflight.length < PRECREATE_CONCURRENCY && created + errors + inflight.length < count) {
       const p = client
         .createProcessInstance({
           processDefinitionKey: ProcessDefinitionKey.assumeExists(processDefKey),
@@ -88,10 +90,11 @@ async function continuousLoop(
   const t0 = Date.now();
   let lastLog = Date.now();
 
-  console.log(`[ts-producer] continuous: starting (concurrency=${CONCURRENCY})...`);
+  console.log(`[ts-producer] continuous: starting (batch=${CONTINUOUS_BATCH} every ${CONTINUOUS_INTERVAL_MS}ms)...`);
 
   while (!STOP_FILE || !fs.existsSync(STOP_FILE)) {
-    while (inflight.length < CONCURRENCY) {
+    // Launch a batch of CONTINUOUS_BATCH requests
+    for (let i = 0; i < CONTINUOUS_BATCH; i++) {
       const p = client
         .createProcessInstance({
           processDefinitionKey: ProcessDefinitionKey.assumeExists(processDefKey),
@@ -105,13 +108,15 @@ async function continuousLoop(
         });
       inflight.push(p);
     }
+    // Wait for batch to complete + interval
+    await Promise.allSettled(inflight.splice(0));
     if (Date.now() - lastLog > 10_000) {
       const elapsed = ((Date.now() - t0) / 1000).toFixed(0);
       const rate = (created / ((Date.now() - t0) / 1000)).toFixed(0);
       console.log(`[ts-producer] continuous: ${created} ok, ${errors} err, ${elapsed}s, ~${rate}/s`);
       lastLog = Date.now();
     }
-    await new Promise((r) => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, CONTINUOUS_INTERVAL_MS));
   }
   await Promise.allSettled(inflight);
 

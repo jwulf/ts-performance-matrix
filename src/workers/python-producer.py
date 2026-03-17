@@ -36,7 +36,9 @@ from camunda_orchestration_sdk.models import ProcessCreationByKey, ProcessInstan
 BPMN_PATH = os.environ.get("BPMN_PATH", "")
 PRECREATE_COUNT = int(os.environ.get("PRECREATE_COUNT", "0"))
 PAYLOAD_SIZE_KB = int(os.environ.get("PAYLOAD_SIZE_KB", "10"))
-CONCURRENCY = 200
+PRECREATE_CONCURRENCY = 200
+CONTINUOUS_BATCH = 10
+CONTINUOUS_INTERVAL_S = 5
 CONTINUOUS = os.environ.get("CONTINUOUS", "0") == "1"
 READY_FILE = os.environ.get("READY_FILE", "")
 GO_FILE = os.environ.get("GO_FILE", "")
@@ -49,7 +51,7 @@ async def create_batch(client, process_def_key, variables, count, label):
     """Create a fixed number of instances with concurrency control."""
     created = 0
     errors = 0
-    sem = asyncio.Semaphore(CONCURRENCY)
+    sem = asyncio.Semaphore(PRECREATE_CONCURRENCY)
     t0 = time.time()
     last_log = t0
 
@@ -88,15 +90,18 @@ async def continuous_loop(client, process_def_key, variables):
     """Create instances continuously until STOP_FILE appears."""
     created = 0
     errors = 0
-    sem = asyncio.Semaphore(CONCURRENCY)
     t0 = time.time()
     last_log = t0
 
-    print(f"[python-producer] continuous: starting (concurrency={CONCURRENCY})...")
+    print(f"[python-producer] continuous: starting (batch={CONTINUOUS_BATCH} every {CONTINUOUS_INTERVAL_S}s)...")
 
-    async def create_one():
-        nonlocal created, errors, last_log
-        async with sem:
+    while not STOP_FILE or not os.path.exists(STOP_FILE):
+        # Launch a small batch
+        batch_created = 0
+        batch_errors = 0
+
+        async def create_one():
+            nonlocal created, errors, batch_created, batch_errors
             try:
                 await client.create_process_instance(
                     data=ProcessCreationByKey(
@@ -105,22 +110,22 @@ async def continuous_loop(client, process_def_key, variables):
                     )
                 )
                 created += 1
+                batch_created += 1
             except Exception:
                 errors += 1
+                batch_errors += 1
 
-            now = time.time()
-            if now - last_log > 10:
-                elapsed = int(now - t0)
-                rate = int(created / (now - t0)) if now > t0 else 0
-                print(f"[python-producer] continuous: {created} ok, {errors} err, {elapsed}s, ~{rate}/s")
-                last_log = now
-
-    while not STOP_FILE or not os.path.exists(STOP_FILE):
-        # Launch a batch of tasks up to concurrency
-        batch_size = CONCURRENCY
-        tasks = [asyncio.create_task(create_one()) for _ in range(batch_size)]
+        tasks = [asyncio.create_task(create_one()) for _ in range(CONTINUOUS_BATCH)]
         await asyncio.gather(*tasks)
-        await asyncio.sleep(0.005)
+
+        now = time.time()
+        if now - last_log > 10:
+            elapsed = int(now - t0)
+            rate = int(created / (now - t0)) if now > t0 else 0
+            print(f"[python-producer] continuous: {created} ok, {errors} err, {elapsed}s, ~{rate}/s")
+            last_log = now
+
+        await asyncio.sleep(CONTINUOUS_INTERVAL_S)
 
     duration_s = time.time() - t0
     rate = created / duration_s if duration_s > 0 else 0

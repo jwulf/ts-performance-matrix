@@ -3,3 +3,4 @@ results
 src/workers/csharp-worker/bin
 src/workers/csharp-worker/obj
 src/workers/java-worker/target
+.github/copilot-instructions.md

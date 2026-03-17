@@ -30,6 +30,38 @@ var RESULT_FILE = Env("RESULT_FILE", "./result.json");
 var READY_FILE = Env("READY_FILE", "");
 var GO_FILE = Env("GO_FILE", "");
 
+// Aggregator-based pool exhaustion detection
+var AGGREGATOR_URL = Env("AGGREGATOR_URL", "");
+var aggregatorStop = false;
+var lastHeartbeatTicks = 0L;
+var heartbeatIntervalTicks = 2L * Stopwatch.Frequency; // 2s
+
+void CheckAggregatorStop(long t0Ticks, int totalCompleted)
+{
+    if (string.IsNullOrEmpty(AGGREGATOR_URL)) return;
+    var now = Stopwatch.GetTimestamp();
+    if (now - lastHeartbeatTicks < heartbeatIntervalTicks) return;
+    lastHeartbeatTicks = now;
+    try
+    {
+        using var hc = new HttpClient { Timeout = TimeSpan.FromSeconds(1) };
+        var body = new StringContent(
+            $"{{\"processId\":\"{PROCESS_ID}\",\"completed\":{totalCompleted}}}",
+            System.Text.Encoding.UTF8, "application/json");
+        var resp = hc.PostAsync($"{AGGREGATOR_URL}/heartbeat", body).GetAwaiter().GetResult();
+        if (resp.IsSuccessStatusCode)
+        {
+            var json = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+            if (json.Contains("\"stop\": true") || json.Contains("\"stop\":true"))
+                aggregatorStop = true;
+        }
+    }
+    catch
+    {
+        // Aggregator unreachable — continue working
+    }
+}
+
 // Configure SDK via env vars
 Environment.SetEnvironmentVariable("CAMUNDA_REST_ADDRESS", BROKER_REST_URL);
 Environment.SetEnvironmentVariable("CAMUNDA_AUTH_STRATEGY", "NONE");
@@ -85,7 +117,7 @@ try
     var memSampler = new MemorySampler();
     memSampler.Start();
 
-    var (workerCompleted, workerErrors, wallClockS) = await RunRest(httpSimPort);
+    var (workerCompleted, workerErrors, wallClockS, stopReason) = await RunRest(httpSimPort);
 
     simCts?.Cancel();
 
@@ -111,6 +143,7 @@ try
         TotalErrors = totalErrors,
         WallClockS = wallClockS,
         Throughput = throughput,
+        StopReason = stopReason,
         PerWorkerCompleted = workerCompleted,
         PerWorkerErrors = workerErrors,
         PerWorkerThroughputs = perWorkerThroughputs,
@@ -155,7 +188,7 @@ catch (Exception ex)
 
 // ─── REST worker (SDK-based) ─────────────────────────────
 
-async Task<(int[] completed, int[] errors, double wallClockS)> RunRest(int httpSimPort)
+async Task<(int[] completed, int[] errors, double wallClockS, string stopReason)> RunRest(int httpSimPort)
 {
     var totalTarget = NUM_WORKERS * TARGET_PER_WORKER;
     var workerCompleted = new int[NUM_WORKERS];
@@ -205,20 +238,26 @@ async Task<(int[] completed, int[] errors, double wallClockS)> RunRest(int httpS
 
     var cts = new CancellationTokenSource(TimeSpan.FromSeconds(SCENARIO_TIMEOUT_S));
     var sw = Stopwatch.StartNew();
+    var t0Ticks = Stopwatch.GetTimestamp();
 
     // Run workers in background — blocks until cancellation
     var workerTask = client.RunWorkersAsync(ct: cts.Token);
 
-    // Poll for completion
-    while (Volatile.Read(ref done) == 0 && !cts.Token.IsCancellationRequested)
+    // Poll for completion, aggregator stop, or timeout
+    while (Volatile.Read(ref done) == 0 && !aggregatorStop && !cts.Token.IsCancellationRequested)
+    {
+        CheckAggregatorStop(t0Ticks, workerCompleted.Sum());
         await Task.Delay(50);
+    }
 
     // Stop workers gracefully
     cts.Cancel();
     await workerTask;
 
     sw.Stop();
-    return (workerCompleted, workerErrors, sw.Elapsed.TotalSeconds);
+    var totalFinal = workerCompleted.Sum();
+    var stopReason = totalFinal >= totalTarget ? "target" : aggregatorStop ? "pool-exhaustion" : "timeout";
+    return (workerCompleted, workerErrors, sw.Elapsed.TotalSeconds, stopReason);
 }
 
 // ─── CPU work simulation ─────────────────────────────────
@@ -498,6 +537,7 @@ class ResultOutput
     public int TotalErrors { get; set; }
     public double WallClockS { get; set; }
     public double Throughput { get; set; }
+    public string? StopReason { get; set; }
     public int[] PerWorkerCompleted { get; set; } = [];
     public int[] PerWorkerErrors { get; set; } = [];
     public double[] PerWorkerThroughputs { get; set; } = [];

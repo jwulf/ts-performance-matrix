@@ -15,7 +15,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as childProcess from 'node:child_process';
 import type { ScenarioConfig, ClusterConfig, SdkLanguage } from './config.js';
-import { GCP_DEFAULTS } from './config.js';
+import { GCP_DEFAULTS, DEFAULT_PRODUCER_RATE } from './config.js';
 import type { ScenarioResult, ProcessResult, ServerMetrics, ServerResourceUsage } from './types.js';
 import { jainFairness } from './types.js';
 
@@ -540,6 +540,8 @@ function workerStartupScript(
     brokerGrpcUrl: string;
     preCreateCount: number;
     isLeader: boolean;
+    aggregatorUrl: string;
+    totalProcesses: number;
   },
 ): string {
   const envBlock = `WORKER_PROCESS_ID=${workerId} \\
@@ -553,6 +555,7 @@ PAYLOAD_SIZE_KB=10 \\
 SCENARIO_TIMEOUT_S=${config.scenarioTimeout} \\
 BROKER_REST_URL=${config.brokerRestUrl} \\
 BROKER_GRPC_URL=${config.brokerGrpcUrl} \\
+AGGREGATOR_URL=${config.aggregatorUrl} \\
 RESULT_FILE=/opt/worker/result.json`;
 
   // --- Producer configuration (leader only) ---
@@ -593,6 +596,14 @@ RESULT_FILE=/opt/worker/result.json`;
     leaderSetup = `
 # ─── Leader: deploy + pre-create + continuous producer ───
 ${bpmnDownload}
+
+# Download and launch aggregator
+gsutil cp gs://${opts.bucket}/${opts.runId}/aggregator.py /opt/worker/aggregator.py
+PRECREATE_COUNT=${config.preCreateCount} PRODUCER_RATE=${DEFAULT_PRODUCER_RATE} TOTAL_PROCESSES=${config.totalProcesses} python3 /opt/worker/aggregator.py &
+AGGREGATOR_PID=$!
+echo "[leader] Aggregator launched (PID=$AGGREGATOR_PID)"
+sleep 1
+
 ${pythonProducerDownload}${producerCmd} &
 PRODUCER_PID=$!
 echo "[leader] Producer launched (PID=$PRODUCER_PID), waiting for pre-creation..."
@@ -1388,11 +1399,50 @@ export async function runScenarioGcp(
   const bpmnPath = path.resolve(import.meta.dirname, '..', 'fixtures', 'test-job-process.bpmn');
   gsutil(['cp', bpmnPath, `gs://${opts.bucket}/${opts.runId}/test-job-process.bpmn`]);
   console.log(`  [${scenario.id}] BPMN uploaded to GCS`);
+
+  // Upload aggregator script (leader will download and run it)
+  const aggregatorPath = path.resolve(import.meta.dirname, 'aggregator.py');
+  gsutil(['cp', aggregatorPath, `gs://${opts.bucket}/${opts.runId}/aggregator.py`]);
+
   let preCreate = { created: 0, errors: 0, durationS: 0 };
 
-  // Provision worker VMs
+  // Provision worker VMs — leader first so we can get its IP for the aggregator URL
   const workerVmNames: string[] = [];
-  for (let p = 0; p < P; p++) {
+  const leaderVmName = `pw-${vmTag(opts.runId)}-${scenario.id.toLowerCase().replace(/[^a-z0-9-]/g, '-')}-0`;
+
+  // Create leader VM (p=0)
+  const leaderScript = workerStartupScript(opts, scenario.id, 'process-0', {
+    sdkLanguage, sdkMode, handlerType,
+    numWorkers: WPP,
+    targetPerWorker: opts.targetPerWorker,
+    scenarioTimeout: opts.scenarioTimeout,
+    brokerRestUrl, brokerGrpcUrl,
+    preCreateCount: opts.preCreateCount,
+    isLeader: true,
+    aggregatorUrl: 'http://localhost:3333',
+    totalProcesses: P,
+  });
+
+  const leaderOk = await createVm(opts, leaderVmName, GCP_DEFAULTS.workerMachineType, leaderScript, ['perf-worker']);
+  if (!leaderOk) {
+    console.error(`  [${scenario.id}] Leader VM creation failed — aborting scenario`);
+    await deleteVms(opts, [leaderVmName]);
+    return errorResult(scenario, `Leader VM creation failed: ${leaderVmName}`);
+  }
+  workerVmNames.push(leaderVmName);
+
+  // Get leader IP for aggregator URL
+  const leaderIp = await getVmInternalIp(opts, leaderVmName);
+  if (!leaderIp) {
+    console.error(`  [${scenario.id}] Could not get leader IP — aborting scenario`);
+    await deleteVms(opts, workerVmNames);
+    return errorResult(scenario, `Could not get leader IP for aggregator`);
+  }
+  const aggregatorUrl = `http://${leaderIp}:3333`;
+  console.log(`  [${scenario.id}] Leader ${leaderVmName} IP=${leaderIp}, aggregator=${aggregatorUrl}`);
+
+  // Create follower VMs (p=1..P-1)
+  for (let p = 1; p < P; p++) {
     const workerId = `process-${p}`;
     const vmName = `pw-${vmTag(opts.runId)}-${scenario.id.toLowerCase().replace(/[^a-z0-9-]/g, '-')}-${p}`;
     const script = workerStartupScript(opts, scenario.id, workerId, {
@@ -1401,8 +1451,10 @@ export async function runScenarioGcp(
       targetPerWorker: opts.targetPerWorker,
       scenarioTimeout: opts.scenarioTimeout,
       brokerRestUrl, brokerGrpcUrl,
-      preCreateCount: p === 0 ? opts.preCreateCount : 0,
-      isLeader: p === 0,
+      preCreateCount: 0,
+      isLeader: false,
+      aggregatorUrl,
+      totalProcesses: P,
     });
 
     const vmOk = await createVm(opts, vmName, GCP_DEFAULTS.workerMachineType, script, ['perf-worker']);

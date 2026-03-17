@@ -44,6 +44,9 @@ const RESULT_FILE = process.env.RESULT_FILE || './result.json';
 const READY_FILE = process.env.READY_FILE || '';
 const GO_FILE = process.env.GO_FILE || '';
 
+// Aggregator URL for centralized pool exhaustion detection
+const AGGREGATOR_URL = process.env.AGGREGATOR_URL || '';
+
 // ─── Per-worker metrics ──────────────────────────────────
 
 interface WorkerMetrics {
@@ -74,6 +77,33 @@ function recordError(workerMetrics: WorkerMetrics[], err: unknown) {
   minWorker.errors++;
   const key = errorKey(err);
   errorTypes[key] = (errorTypes[key] || 0) + 1;
+}
+
+// ─── Aggregator heartbeat (centralized pool exhaustion) ──
+
+type StopReason = 'target' | 'pool-exhaustion' | 'timeout';
+
+function createAggregatorChecker(): { check: (totalCompleted: number) => void; isStopped: () => boolean } {
+  let stopped = false;
+  let lastHB = 0;
+  return {
+    check(totalCompleted: number) {
+      if (!AGGREGATOR_URL) return;
+      const now = Date.now();
+      if (now - lastHB < 2000) return;
+      lastHB = now;
+      fetch(`${AGGREGATOR_URL}/heartbeat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ processId: PROCESS_ID, completed: totalCompleted }),
+        signal: AbortSignal.timeout(1000),
+      })
+        .then(r => r.json())
+        .then(d => { if (d.stop) stopped = true; })
+        .catch(() => {});
+    },
+    isStopped: () => stopped,
+  };
 }
 
 // ─── HTTP sim server ─────────────────────────────────────
@@ -227,7 +257,7 @@ async function waitForGo(): Promise<void> {
 
 // ─── REST mode runner ────────────────────────────────────
 
-async function runRestBalanced(httpSimPort: number): Promise<{ metrics: WorkerMetrics[]; wallClockS: number }> {
+async function runRestBalanced(httpSimPort: number): Promise<{ metrics: WorkerMetrics[]; wallClockS: number; stopReason: StopReason }> {
   const { createCamundaClient } = await import('@camunda8/orchestration-cluster-api');
 
   // Single shared client for this process — all WPP workers share it
@@ -285,8 +315,11 @@ async function runRestBalanced(httpSimPort: number): Promise<{ metrics: WorkerMe
     },
   });
 
-  // Wait for completion or timeout
-  while (!done && Date.now() < deadline) {
+  // Wait for completion, aggregator stop, or timeout
+  const aggregator = createAggregatorChecker();
+  while (!done && !aggregator.isStopped() && Date.now() < deadline) {
+    const totalSoFar = workerMetrics.reduce((s, w) => s + w.completed, 0);
+    aggregator.check(totalSoFar);
     await new Promise((r) => setTimeout(r, 50));
   }
 
@@ -294,12 +327,14 @@ async function runRestBalanced(httpSimPort: number): Promise<{ metrics: WorkerMe
   try { jobWorker.stop(); } catch { /* ignore */ }
 
   const wallClockS = (Date.now() - t0) / 1000;
-  return { metrics: workerMetrics, wallClockS };
+  const finalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
+  const stopReason: StopReason = finalCompleted >= totalTarget ? 'target' : aggregator.isStopped() ? 'pool-exhaustion' : 'timeout';
+  return { metrics: workerMetrics, wallClockS, stopReason };
 }
 
 // ─── REST-threaded mode runner (CPU work on worker_threads) ──
 
-async function runRestThreaded(httpSimPort: number): Promise<{ metrics: WorkerMetrics[]; wallClockS: number }> {
+async function runRestThreaded(httpSimPort: number): Promise<{ metrics: WorkerMetrics[]; wallClockS: number; stopReason: StopReason }> {
   const { createCamundaClient } = await import('@camunda8/orchestration-cluster-api');
 
   const client = createCamundaClient({
@@ -354,7 +389,10 @@ async function runRestThreaded(httpSimPort: number): Promise<{ metrics: WorkerMe
     },
   });
 
-  while (!done && Date.now() < deadline) {
+  const aggregator = createAggregatorChecker();
+  while (!done && !aggregator.isStopped() && Date.now() < deadline) {
+    const totalSoFar = workerMetrics.reduce((s, w) => s + w.completed, 0);
+    aggregator.check(totalSoFar);
     await new Promise((r) => setTimeout(r, 50));
   }
 
@@ -362,12 +400,14 @@ async function runRestThreaded(httpSimPort: number): Promise<{ metrics: WorkerMe
   try { jobWorker.stop(); } catch { /* ignore */ }
 
   const wallClockS = (Date.now() - t0) / 1000;
-  return { metrics: workerMetrics, wallClockS };
+  const finalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
+  const stopReason: StopReason = finalCompleted >= totalTarget ? 'target' : aggregator.isStopped() ? 'pool-exhaustion' : 'timeout';
+  return { metrics: workerMetrics, wallClockS, stopReason };
 }
 
 // ─── gRPC poll mode runner ───────────────────────────────
 
-async function runGrpcPoll(httpSimPort: number): Promise<{ metrics: WorkerMetrics[]; wallClockS: number }> {
+async function runGrpcPoll(httpSimPort: number): Promise<{ metrics: WorkerMetrics[]; wallClockS: number; stopReason: StopReason }> {
   const { Camunda8 } = await import('@camunda8/sdk');
 
   const c8 = new Camunda8({
@@ -421,7 +461,10 @@ async function runGrpcPoll(httpSimPort: number): Promise<{ metrics: WorkerMetric
     pollInterval: 100,
   });
 
-  while (!done && Date.now() < deadline) {
+  const aggregator = createAggregatorChecker();
+  while (!done && !aggregator.isStopped() && Date.now() < deadline) {
+    const totalSoFar = workerMetrics.reduce((s, w) => s + w.completed, 0);
+    aggregator.check(totalSoFar);
     await new Promise((r) => setTimeout(r, 50));
   }
 
@@ -429,12 +472,14 @@ async function runGrpcPoll(httpSimPort: number): Promise<{ metrics: WorkerMetric
   try { await zeebe.close(); } catch { /* ignore */ }
 
   const wallClockS = (Date.now() - t0) / 1000;
-  return { metrics: workerMetrics, wallClockS };
+  const finalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
+  const stopReason: StopReason = finalCompleted >= totalTarget ? 'target' : aggregator.isStopped() ? 'pool-exhaustion' : 'timeout';
+  return { metrics: workerMetrics, wallClockS, stopReason };
 }
 
 // ─── gRPC stream mode runner ─────────────────────────────
 
-async function runGrpcStream(httpSimPort: number): Promise<{ metrics: WorkerMetrics[]; wallClockS: number }> {
+async function runGrpcStream(httpSimPort: number): Promise<{ metrics: WorkerMetrics[]; wallClockS: number; stopReason: StopReason }> {
   const { Camunda8 } = await import('@camunda8/sdk');
 
   const c8 = new Camunda8({
@@ -489,7 +534,10 @@ async function runGrpcStream(httpSimPort: number): Promise<{ metrics: WorkerMetr
     worker: `${PROCESS_ID}-stream`,
   });
 
-  while (!done && Date.now() < deadline) {
+  const aggregator = createAggregatorChecker();
+  while (!done && !aggregator.isStopped() && Date.now() < deadline) {
+    const totalSoFar = workerMetrics.reduce((s, w) => s + w.completed, 0);
+    aggregator.check(totalSoFar);
     await new Promise((r) => setTimeout(r, 50));
   }
 
@@ -498,7 +546,9 @@ async function runGrpcStream(httpSimPort: number): Promise<{ metrics: WorkerMetr
   try { await zeebe.close(); } catch { /* ignore */ }
 
   const wallClockS = (Date.now() - t0) / 1000;
-  return { metrics: workerMetrics, wallClockS };
+  const finalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
+  const stopReason: StopReason = finalCompleted >= totalTarget ? 'target' : aggregator.isStopped() ? 'pool-exhaustion' : 'timeout';
+  return { metrics: workerMetrics, wallClockS, stopReason };
 }
 
 // ─── Memory sampling ─────────────────────────────────────
@@ -542,7 +592,7 @@ async function main() {
 
   startMemorySampler();
 
-  let result: { metrics: WorkerMetrics[]; wallClockS: number };
+  let result: { metrics: WorkerMetrics[]; wallClockS: number; stopReason: StopReason };
 
   if (SDK_MODE === 'grpc-streaming') {
     result = await runGrpcStream(httpSimPort);
@@ -577,6 +627,7 @@ async function main() {
     totalErrors,
     wallClockS: result.wallClockS,
     throughput,
+    stopReason: result.stopReason,
     perWorkerCompleted: result.metrics.map((w) => w.completed),
     perWorkerErrors: result.metrics.map((w) => w.errors),
     perWorkerThroughputs: result.metrics.map((w) =>

@@ -16,6 +16,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -43,6 +45,41 @@ public class Worker {
     static final String RESULT_FILE = env("RESULT_FILE", "./result.json");
     static final String READY_FILE = env("READY_FILE", "");
     static final String GO_FILE = env("GO_FILE", "");
+
+    // Aggregator-based pool exhaustion detection
+    static final String AGGREGATOR_URL = env("AGGREGATOR_URL", "");
+    static volatile boolean aggregatorStop = false;
+    static long lastHeartbeatNanos = 0;
+    static final long HEARTBEAT_INTERVAL_NS = 2_000_000_000L; // 2s
+
+    static void checkAggregatorStop(long t0Nanos, int totalCompleted) {
+        if (AGGREGATOR_URL.isEmpty()) return;
+        long now = System.nanoTime();
+        if (now - lastHeartbeatNanos < HEARTBEAT_INTERVAL_NS) return;
+        lastHeartbeatNanos = now;
+        try {
+            var url = new java.net.URL(AGGREGATOR_URL + "/heartbeat");
+            var conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            conn.setConnectTimeout(1000);
+            conn.setReadTimeout(1000);
+            var body = String.format("{\"processId\":\"%s\",\"completed\":%d}", PROCESS_ID, totalCompleted);
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(body.getBytes());
+            }
+            if (conn.getResponseCode() == 200) {
+                var resp = new String(conn.getInputStream().readAllBytes());
+                if (resp.contains("\"stop\": true") || resp.contains("\"stop\":true")) {
+                    aggregatorStop = true;
+                }
+            }
+            conn.disconnect();
+        } catch (Exception ignored) {
+            // Aggregator unreachable — continue working
+        }
+    }
 
     // Hard cap on execution threads: avoids spawning 1600 OS threads at WPP=50 on a 2-vCPU VM.
     // 100× available processors is generous for I/O-bound handlers while preventing thread explosion.
@@ -101,6 +138,7 @@ public class Worker {
             int[] workerCompleted;
             int[] workerErrors;
             double wallClockS;
+            String stopReason;
 
             Map<String, Integer> errorTypeCounts;
             if ("grpc-streaming".equals(SDK_MODE)) {
@@ -109,18 +147,21 @@ public class Worker {
                 workerErrors = result.errors;
                 wallClockS = result.wallClockS;
                 errorTypeCounts = result.errorTypes;
+                stopReason = result.stopReason;
             } else if ("grpc-polling".equals(SDK_MODE)) {
                 var result = runGrpcPolling();
                 workerCompleted = result.completed;
                 workerErrors = result.errors;
                 wallClockS = result.wallClockS;
                 errorTypeCounts = result.errorTypes;
+                stopReason = result.stopReason;
             } else {
                 var result = runRest();
                 workerCompleted = result.completed;
                 workerErrors = result.errors;
                 wallClockS = result.wallClockS;
                 errorTypeCounts = result.errorTypes;
+                stopReason = result.stopReason;
             }
 
             int totalCompleted = Arrays.stream(workerCompleted).sum();
@@ -150,6 +191,7 @@ public class Worker {
             output.put("totalErrors", totalErrors);
             output.put("wallClockS", wallClockS);
             output.put("throughput", throughput);
+            output.put("stopReason", stopReason);
             output.set("perWorkerCompleted", intArrayToJson(workerCompleted));
             output.set("perWorkerErrors", intArrayToJson(workerErrors));
             output.set("perWorkerThroughputs", doubleArrayToJson(perWorkerThroughputs));
@@ -176,7 +218,7 @@ public class Worker {
 
     // ─── REST mode ───────────────────────────────────────────
 
-    record RestResult(int[] completed, int[] errors, double wallClockS, Map<String, Integer> errorTypes) {}
+    record RestResult(int[] completed, int[] errors, double wallClockS, Map<String, Integer> errorTypes, String stopReason) {}
 
     static RestResult runRest() throws Exception {
         var client = CamundaClient.newClientBuilder()
@@ -280,9 +322,17 @@ public class Worker {
                 .pollInterval(Duration.ofMillis(100))
                 .open();
 
-        while (!done.get() && System.nanoTime() < deadline) {
+        while (!done.get() && !aggregatorStop && System.nanoTime() < deadline) {
+            checkAggregatorStop(t0, sumArray(workerCompleted));
             Thread.sleep(50);
         }
+
+        // Determine stop reason
+        int totalFinal = sumArray(workerCompleted);
+        String stopReason;
+        if (totalFinal >= totalTarget) stopReason = "target";
+        else if (aggregatorStop) stopReason = "pool-exhaustion";
+        else stopReason = "timeout";
 
         // Close with a hard timeout — worker.close() can hang if handlers are stuck
         System.out.printf("[java-worker] Main loop ended: invocations=%d completed=%d errors=%d%n",
@@ -308,7 +358,7 @@ public class Worker {
         errorTypes.entrySet().stream()
                 .sorted((a, b) -> b.getValue().get() - a.getValue().get())
                 .forEach(e -> errorTypeCounts.put(e.getKey(), e.getValue().get()));
-        return new RestResult(completed, errors, wallClockS, errorTypeCounts);
+        return new RestResult(completed, errors, wallClockS, errorTypeCounts, stopReason);
     }
 
     // ─── CPU work simulation ─────────────────────────────────

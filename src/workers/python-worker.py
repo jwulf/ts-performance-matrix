@@ -39,6 +39,42 @@ RESULT_FILE = os.environ.get("RESULT_FILE", "./result.json")
 READY_FILE = os.environ.get("READY_FILE", "")
 GO_FILE = os.environ.get("GO_FILE", "")
 
+# Aggregator URL for centralized pool exhaustion detection
+AGGREGATOR_URL = os.environ.get("AGGREGATOR_URL", "")
+
+_aggregator_stop = False
+_last_heartbeat = 0.0
+
+
+def send_heartbeat(total_completed: int):
+    """Non-blocking heartbeat to the aggregator (runs in a daemon thread)."""
+    global _aggregator_stop, _last_heartbeat
+    if not AGGREGATOR_URL:
+        return
+    now = time.monotonic()
+    if now - _last_heartbeat < 2:
+        return
+    _last_heartbeat = now
+
+    def _do():
+        global _aggregator_stop
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                AGGREGATOR_URL + "/heartbeat",
+                data=json.dumps({"processId": PROCESS_ID, "completed": total_completed}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            resp = urllib.request.urlopen(req, timeout=1)
+            data = json.loads(resp.read())
+            if data.get("stop"):
+                _aggregator_stop = True
+        except Exception:
+            pass
+
+    threading.Thread(target=_do, daemon=True).start()
+
 # ─── HTTP sim server ─────────────────────────────────────
 
 http_sim_port = 0
@@ -205,10 +241,11 @@ async def run_rest(http_sim_port: int):
             config=config, callback=handler, auto_start=True,
         )
 
-        # Run workers as background task, poll for completion or timeout
+        # Run workers as background task, poll for completion, aggregator stop, or timeout
         worker_task = asyncio.create_task(client.run_workers())
         try:
-            while not done and time.monotonic() < deadline:
+            while not done and not _aggregator_stop and time.monotonic() < deadline:
+                send_heartbeat(sum(worker_completed))
                 await asyncio.sleep(0.05)
         finally:
             worker_task.cancel()
@@ -221,7 +258,9 @@ async def run_rest(http_sim_port: int):
             await http_client.aclose()
 
     wall_clock_s = time.monotonic() - t0
-    return worker_completed, worker_errors, wall_clock_s
+    total = sum(worker_completed)
+    stop_reason = "target" if total >= total_target else ("pool-exhaustion" if _aggregator_stop else "timeout")
+    return worker_completed, worker_errors, wall_clock_s, stop_reason
 
 
 # ─── REST-threaded worker (sync handler in ThreadPoolExecutor) ────
@@ -277,10 +316,11 @@ async def run_rest_threaded(http_sim_port: int):
             execution_strategy="thread", auto_start=True,
         )
 
-        # Run workers as background task, poll for completion or timeout
+        # Run workers as background task, poll for completion, aggregator stop, or timeout
         worker_task = asyncio.create_task(client.run_workers())
         try:
-            while not done and time.monotonic() < deadline:
+            while not done and not _aggregator_stop and time.monotonic() < deadline:
+                send_heartbeat(sum(worker_completed))
                 await asyncio.sleep(0.05)
         finally:
             worker_task.cancel()
@@ -290,7 +330,9 @@ async def run_rest_threaded(http_sim_port: int):
                 pass
 
     wall_clock_s = time.monotonic() - t0
-    return worker_completed, worker_errors, wall_clock_s
+    total = sum(worker_completed)
+    stop_reason = "target" if total >= total_target else ("pool-exhaustion" if _aggregator_stop else "timeout")
+    return worker_completed, worker_errors, wall_clock_s, stop_reason
 
 async def main():
     print(f"[python-worker] id={PROCESS_ID} mode={SDK_MODE} handler={HANDLER_TYPE} workers={NUM_WORKERS}", flush=True)
@@ -310,9 +352,9 @@ async def main():
     sampler.start()
 
     if SDK_MODE == "rest-threaded":
-        worker_completed, worker_errors, wall_clock_s = await run_rest_threaded(http_sim_port)
+        worker_completed, worker_errors, wall_clock_s, stop_reason = await run_rest_threaded(http_sim_port)
     else:
-        worker_completed, worker_errors, wall_clock_s = await run_rest(http_sim_port)
+        worker_completed, worker_errors, wall_clock_s, stop_reason = await run_rest(http_sim_port)
 
     total_completed = sum(worker_completed)
     total_errors = sum(worker_errors)
@@ -336,6 +378,7 @@ async def main():
         "totalErrors": total_errors,
         "wallClockS": wall_clock_s,
         "throughput": throughput,
+        "stopReason": stop_reason,
         "perWorkerCompleted": worker_completed,
         "perWorkerErrors": worker_errors,
         "perWorkerThroughputs": per_worker_throughputs,
