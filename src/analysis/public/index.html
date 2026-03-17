@@ -94,7 +94,23 @@
     <div class="loading-card">
       <div class="spinner"></div>
       <div class="loading-title" id="loading-title">Loading run data...</div>
+      <div class="loading-progress-bar">
+        <div class="loading-progress-fill" id="loading-progress-fill"></div>
+      </div>
+      <div class="loading-stats" id="loading-stats"></div>
       <div class="loading-log" id="loading-log"></div>
+    </div>
+  </div>
+
+  <!-- Scenario Detail Popover -->
+  <div id="scenario-popover" class="scenario-popover hidden">
+    <div class="popover-backdrop" id="popover-backdrop"></div>
+    <div class="popover-panel">
+      <div class="popover-header">
+        <h2 id="popover-title"></h2>
+        <button class="popover-close" id="popover-close">&times;</button>
+      </div>
+      <div class="popover-body" id="popover-body"></div>
     </div>
   </div>
 

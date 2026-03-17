@@ -341,9 +341,13 @@ async function loadSelectedRun(refresh, stateToRestore) {
   const overlay = document.getElementById('loading-overlay');
   const loadingTitle = document.getElementById('loading-title');
   const loadingLog = document.getElementById('loading-log');
+  const loadingStats = document.getElementById('loading-stats');
+  const progressFill = document.getElementById('loading-progress-fill');
   overlay.classList.remove('hidden');
   loadingTitle.textContent = `Loading ${runId}...`;
   loadingLog.innerHTML = '';
+  loadingStats.textContent = '';
+  progressFill.style.width = '0%';
 
   setStatus('Loading...');
   loadingMsg.textContent = '';
@@ -351,12 +355,55 @@ async function loadSelectedRun(refresh, stateToRestore) {
   dataTable.classList.add('hidden');
   outputSection.classList.add('hidden');
 
+  let fetchedCount = 0;
+  let totalLanes = 0;
+  let phase = 'init'; // init | scanning | fetching | done
+
   function addLogLine(msg) {
     const line = document.createElement('div');
     line.className = 'log-line';
     line.textContent = msg;
     loadingLog.appendChild(line);
     loadingLog.scrollTop = loadingLog.scrollHeight;
+
+    // Parse progress messages to update stats/progress bar
+    const lanesMatch = msg.match(/Found (\d+) lanes/);
+    if (lanesMatch) {
+      totalLanes = parseInt(lanesMatch[1]);
+      phase = 'scanning';
+    }
+
+    const fetchedMatch = msg.match(/Fetched .+\((\d+) total\)/);
+    if (fetchedMatch) {
+      fetchedCount = parseInt(fetchedMatch[1]);
+      phase = 'fetching';
+      loadingStats.textContent = `${fetchedCount} scenarios fetched`;
+    }
+
+    const scanMatch = msg.match(/Scanning (lane-\d+)/);
+    if (scanMatch && phase !== 'fetching') {
+      loadingStats.textContent = `Scanning ${scanMatch[1]}...`;
+    }
+
+    const servingMatch = msg.match(/Serving from (?:cache|local)/);
+    if (servingMatch) {
+      progressFill.style.width = '100%';
+      loadingStats.textContent = msg;
+    }
+
+    const doneMatch = msg.match(/Done: (\d+) scenarios loaded/);
+    if (doneMatch) {
+      phase = 'done';
+      progressFill.style.width = '100%';
+      loadingStats.textContent = msg;
+    }
+
+    // Animate progress bar during fetch phase (estimate)
+    if (phase === 'fetching' && fetchedCount > 0) {
+      // We don't know total, but animate based on count
+      const pct = Math.min(95, fetchedCount * 1.2);
+      progressFill.style.width = `${pct}%`;
+    }
   }
 
   try {
@@ -721,6 +768,7 @@ function renderTable() {
     }
 
     const tr = document.createElement('tr');
+    tr.style.cursor = 'pointer';
 
     // Copy ID button cell
     const tdCopy = document.createElement('td');
@@ -729,7 +777,8 @@ function renderTable() {
     copyBtn.className = 'copy-id-btn';
     copyBtn.innerHTML = '\u{1F4CB}';
     copyBtn.title = `Copy: ${row.scenarioId}`;
-    copyBtn.addEventListener('click', () => {
+    copyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
       navigator.clipboard.writeText(row.scenarioId).then(() => {
         copyBtn.classList.add('copied');
         copyBtn.innerHTML = '\u2713';
@@ -738,6 +787,9 @@ function renderTable() {
     });
     tdCopy.appendChild(copyBtn);
     tr.appendChild(tdCopy);
+
+    // Click row → open detail popover
+    tr.addEventListener('click', () => openScenarioPopover(row));
 
     for (const dim of dimCols) {
       const td = document.createElement('td');
@@ -848,6 +900,190 @@ function toSlack(headers, rows) {
 
 function escapeHtml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ─── Scenario Detail Popover ─────────────────────────────
+
+function openScenarioPopover(row) {
+  const popover = document.getElementById('scenario-popover');
+  const title = document.getElementById('popover-title');
+  const body = document.getElementById('popover-body');
+  const backdrop = document.getElementById('popover-backdrop');
+  const closeBtn = document.getElementById('popover-close');
+
+  title.textContent = row.scenarioId;
+
+  // Build detail content
+  body.innerHTML = '';
+
+  // ── Configuration section
+  const configSection = buildSection('Configuration', [
+    ['Cluster', row.cluster],
+    ['Language', row.sdkLanguage],
+    ['Mode', row.sdkMode],
+    ['Handler', row.handlerType],
+    ['Total Workers', row.totalWorkers],
+    ['Workers/Process', row.workersPerProcess],
+    ['Processes', row.processes],
+  ]);
+  body.appendChild(configSection);
+
+  // ── Aggregate Results section
+  const total = (row.totalCompleted || 0) + (row.totalErrors || 0);
+  const errRate = total > 0 ? ((row.totalErrors / total) * 100).toFixed(2) + '%' : '0%';
+  const resultsSection = buildSection('Aggregate Results', [
+    ['Status', row.status, `status-${row.status}`],
+    ['Throughput', row.aggregateThroughput?.toFixed(1) + ' ops/s'],
+    ['Completed', row.totalCompleted?.toLocaleString()],
+    ['Errors', row.totalErrors?.toLocaleString()],
+    ['Error Rate', errRate],
+    ['Wall Clock', row.wallClockS?.toFixed(1) + 's'],
+    ['Fairness (Jain)', row.jainFairness?.toFixed(4)],
+  ]);
+  body.appendChild(resultsSection);
+
+  // ── Server Resource Usage
+  if (row.serverCpuAvg != null || row.serverMemAvgMb != null) {
+    const serverSection = buildSection('Server Resources', [
+      ['CPU Avg', row.serverCpuAvg != null ? (row.serverCpuAvg * 100).toFixed(1) + '%' : '—'],
+      ['CPU Peak', row.serverCpuPeak != null ? (row.serverCpuPeak * 100).toFixed(1) + '%' : '—'],
+      ['Memory Avg', row.serverMemAvgMb != null ? row.serverMemAvgMb.toFixed(0) + ' MB' : '—'],
+      ['Memory Peak', row.serverMemPeakMb != null ? row.serverMemPeakMb.toFixed(0) + ' MB' : '—'],
+      ['Threads Avg', row.serverThreadsAvg != null ? Math.round(row.serverThreadsAvg).toString() : '—'],
+    ]);
+    body.appendChild(serverSection);
+  }
+
+  // ── Client Memory
+  if (row.clientMemAvgMb != null) {
+    const clientSection = buildSection('Client Memory', [
+      ['Avg RSS', row.clientMemAvgMb?.toFixed(1) + ' MB'],
+      ['Peak RSS', row.clientMemPeakMb?.toFixed(1) + ' MB'],
+    ]);
+    body.appendChild(clientSection);
+  }
+
+  // ── Error Distribution
+  if (row._errorTypes && Object.keys(row._errorTypes).length > 0) {
+    const errEntries = Object.entries(row._errorTypes).sort((a, b) => b[1] - a[1]);
+    const errSection = buildSection('Error Distribution', errEntries.map(([k, v]) => [k, v.toLocaleString()]));
+    body.appendChild(errSection);
+  }
+
+  // ── Pre-creation Stats
+  if (row.preCreate) {
+    const preSection = buildSection('Pre-creation', [
+      ['Created', row.preCreate.created?.toLocaleString()],
+      ['Errors', row.preCreate.errors?.toLocaleString()],
+      ['Duration', row.preCreate.durationS?.toFixed(1) + 's'],
+    ]);
+    body.appendChild(preSection);
+  }
+
+  // ── Continuous Producer
+  if (row.continuousProducer) {
+    const cpSection = buildSection('Continuous Producer', [
+      ['Created', row.continuousProducer.created?.toLocaleString()],
+      ['Errors', row.continuousProducer.errors?.toLocaleString()],
+      ['Duration', row.continuousProducer.durationS?.toFixed(1) + 's'],
+      ['Rate', row.continuousProducer.rate?.toFixed(1) + ' ops/s'],
+    ]);
+    body.appendChild(cpSection);
+  }
+
+  // ── Per-Process Breakdown
+  if (row.processResults && row.processResults.length > 0) {
+    const procDiv = document.createElement('div');
+    procDiv.className = 'popover-section';
+
+    const procHeading = document.createElement('h3');
+    procHeading.textContent = `Per-Process Breakdown (${row.processResults.length})`;
+    procDiv.appendChild(procHeading);
+
+    const procTable = document.createElement('table');
+    procTable.className = 'popover-proc-table';
+    const procHead = document.createElement('thead');
+    procHead.innerHTML = '<tr><th>Process</th><th>Workers</th><th>Completed</th><th>Errors</th><th>Throughput</th><th>Mem Peak</th><th>Mem Avg</th></tr>';
+    procTable.appendChild(procHead);
+
+    const procBody = document.createElement('tbody');
+    const procs = [...row.processResults].sort((a, b) => (b.throughput || 0) - (a.throughput || 0));
+    for (const p of procs) {
+      const ptr = document.createElement('tr');
+      ptr.innerHTML = `
+        <td>${p.vmName || p.processId}</td>
+        <td class="num">${p.workersInProcess}</td>
+        <td class="num">${p.completed?.toLocaleString()}</td>
+        <td class="num">${p.errors?.toLocaleString()}</td>
+        <td class="num">${p.throughput?.toFixed(1)}</td>
+        <td class="num">${p.memoryUsage ? p.memoryUsage.peakRssMb.toFixed(1) + ' MB' : '—'}</td>
+        <td class="num">${p.memoryUsage ? p.memoryUsage.avgRssMb.toFixed(1) + ' MB' : '—'}</td>
+      `;
+      procBody.appendChild(ptr);
+    }
+    procTable.appendChild(procBody);
+    procDiv.appendChild(procTable);
+    body.appendChild(procDiv);
+  }
+
+  // ── Server Metrics (raw)
+  if (row.serverMetrics) {
+    const sm = row.serverMetrics;
+    const smEntries = [
+      ['Received Requests', sm.receivedRequests?.toLocaleString()],
+      ['Dropped Requests', sm.droppedRequests?.toLocaleString()],
+      ['Deferred Appends', sm.deferredAppends?.toLocaleString()],
+      ['Jobs Pushed', sm.jobsPushed?.toLocaleString()],
+      ['Jobs Push Failed', sm.jobsPushFailed?.toLocaleString()],
+      ['Records Processed', sm.recordsProcessed?.toLocaleString()],
+      ['Backpressure Limit', sm.backpressureLimit?.toLocaleString()],
+      ['Backpressure Inflight', sm.backpressureInflight?.toLocaleString()],
+      ['Job Activation Avg', sm.jobActivationAvgMs != null ? sm.jobActivationAvgMs.toFixed(1) + ' ms' : '—'],
+      ['Job Lifetime Avg', sm.jobLifetimeAvgMs != null ? sm.jobLifetimeAvgMs.toFixed(1) + ' ms' : '—'],
+      ['PI Execution Avg', sm.piExecutionAvgMs != null ? sm.piExecutionAvgMs.toFixed(1) + ' ms' : '—'],
+    ];
+    const smSection = buildSection('Server Metrics', smEntries);
+    body.appendChild(smSection);
+  }
+
+  // Show
+  popover.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+
+  // Close handlers
+  const close = () => {
+    popover.classList.add('hidden');
+    document.body.style.overflow = '';
+  };
+  backdrop.onclick = close;
+  closeBtn.onclick = close;
+  const keyHandler = (e) => {
+    if (e.key === 'Escape') { close(); document.removeEventListener('keydown', keyHandler); }
+  };
+  document.addEventListener('keydown', keyHandler);
+}
+
+function buildSection(title, rows) {
+  const div = document.createElement('div');
+  div.className = 'popover-section';
+
+  const h3 = document.createElement('h3');
+  h3.textContent = title;
+  div.appendChild(h3);
+
+  const dl = document.createElement('dl');
+  dl.className = 'detail-grid';
+  for (const [label, value, className] of rows) {
+    const dt = document.createElement('dt');
+    dt.textContent = label;
+    dl.appendChild(dt);
+    const dd = document.createElement('dd');
+    dd.textContent = value ?? '—';
+    if (className) dd.className = className;
+    dl.appendChild(dd);
+  }
+  div.appendChild(dl);
+  return div;
 }
 
 // ─── Boot ────────────────────────────────────────────────
