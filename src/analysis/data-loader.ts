@@ -188,8 +188,30 @@ export function loadRunMetadata(runId: string): Record<string, any> | null {
 }
 
 /**
+ * Load cached scenarios into a Map keyed by scenarioId.
+ * Returns an empty map if the cache doesn't exist or is corrupt.
+ */
+function loadCachedScenarios(cacheFile: string): Map<string, any> {
+  const map = new Map<string, any>();
+  if (!fs.existsSync(cacheFile)) return map;
+  try {
+    const arr = JSON.parse(fs.readFileSync(cacheFile, 'utf-8'));
+    if (Array.isArray(arr)) {
+      for (const item of arr) {
+        const id = item?.scenarioId ?? item?.id;
+        if (id) map.set(id, item);
+      }
+    }
+  } catch { /* corrupt cache — start fresh */ }
+  return map;
+}
+
+/**
  * Load all scenario results for a run.
  * Priority: local committed file → /tmp cache → GCS fetch.
+ *
+ * On refresh: performs an incremental fetch — loads existing cache as a
+ * baseline and only downloads scenario summaries not already cached.
  */
 export function loadRun(runId: string, forceRefresh = false, onProgress?: ProgressCallback): any[] {
   const t0 = Date.now();
@@ -224,10 +246,16 @@ export function loadRun(runId: string, forceRefresh = false, onProgress?: Progre
     }
   }
 
-  // 3. GCS fetch
+  // 3. GCS fetch (incremental — reuse cached scenarios as baseline)
   if (!hasGsutil()) {
     progress(`No GCS access and no local/cached data for ${runId}`);
     return [];
+  }
+
+  // Load existing cache as baseline for incremental refresh
+  const cachedScenarios = loadCachedScenarios(cacheFile);
+  if (cachedScenarios.size > 0) {
+    progress(`Incremental refresh: ${cachedScenarios.size} scenarios already cached`);
   }
 
   // Find all lane directories for this run
@@ -235,7 +263,7 @@ export function loadRun(runId: string, forceRefresh = false, onProgress?: Progre
   const output = gsutil(['ls', `gs://${BUCKET}/`], 60_000);
   if (!output) {
     progress(`No output from gsutil ls — returning empty`);
-    return [];
+    return cachedScenarios.size > 0 ? Array.from(cachedScenarios.values()) : [];
   }
 
   const timestamp = runId.replace('run-', '');
@@ -246,10 +274,12 @@ export function loadRun(runId: string, forceRefresh = false, onProgress?: Progre
   log(`loadRun: found ${laneDirs.length} lanes for ${runId}`);
   progress(`Found ${laneDirs.length} lanes`);
 
-  const results: any[] = [];
-  const seen = new Set<string>();
+  // Start with cached results; we'll add newly fetched ones
+  const resultMap = new Map(cachedScenarios);
+  const seen = new Set<string>(cachedScenarios.keys());
   let totalScenarioDirs = 0;
   let skippedNoSummary = 0;
+  let fetchedNew = 0;
 
   for (const laneDir of laneDirs) {
     // List scenarios in this lane
@@ -270,7 +300,7 @@ export function loadRun(runId: string, forceRefresh = false, onProgress?: Progre
 
     for (const scenarioDir of scenarioDirs) {
       const scenarioId = scenarioDir.split('/').pop()!;
-      if (seen.has(scenarioId)) continue; // deduplicate across lanes
+      if (seen.has(scenarioId)) continue; // already cached or deduplicated
 
       // Download scenario-summary.json
       const summaryPath = `${scenarioDir}/results/scenario-summary.json`;
@@ -283,26 +313,29 @@ export function loadRun(runId: string, forceRefresh = false, onProgress?: Progre
           stdio: ['pipe', 'pipe', 'pipe'],
         });
         const data = JSON.parse(fs.readFileSync(tmpFile, 'utf-8'));
-        results.push(data);
+        resultMap.set(scenarioId, data);
         seen.add(scenarioId);
-        progress(`Fetched ${scenarioId} (${results.length} total)`);
+        fetchedNew++;
+        progress(`Fetched ${scenarioId} (${fetchedNew} new, ${resultMap.size} total)`);
       } catch (e: any) {
         // Log the actual failure reason
         const stderr = e.stderr ? String(e.stderr).trim().slice(0, 150) : '';
         const reason = stderr || e.message.slice(0, 100);
         log(`loadRun: SKIP ${scenarioId} — ${reason}`);
         skippedNoSummary++;
-        seen.add(scenarioId); // don't retry from another lane
+        // Don't add to seen — scenario summary might not exist yet (in-progress run),
+        // so allow retry on next refresh
       } finally {
         try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
       }
     }
   }
 
-  // Cache the results
+  // Cache the merged results
+  const results = Array.from(resultMap.values());
   fs.writeFileSync(cacheFile, JSON.stringify(results, null, 2));
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-  progress(`Done: ${results.length} scenarios loaded, ${skippedNoSummary} skipped (no summary), ${elapsed}s`);
+  progress(`Done: ${results.length} scenarios (${fetchedNew} new, ${cachedScenarios.size} cached), ${skippedNoSummary} skipped (no summary), ${elapsed}s`);
 
   return results;
 }
