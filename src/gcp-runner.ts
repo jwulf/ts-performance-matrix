@@ -390,6 +390,7 @@ function buildWorkerPackage(opts: GcpOptions, language: SdkLanguage): string {
         'tsconfig.json',
       ]);
       gsutil(['cp', tarPath, `${gcsPrefix}/worker-package-ts.tar.gz`]);
+      fs.rmSync(tarPath, { force: true });
       console.log(`[gcp] TS worker package uploaded`);
       return `${gcsPrefix}/worker-package-ts.tar.gz`;
     }
@@ -419,6 +420,8 @@ function buildWorkerPackage(opts: GcpOptions, language: SdkLanguage): string {
         '.',
       ]);
       gsutil(['cp', tarPath, `${gcsPrefix}/worker-package-csharp.tar.gz`]);
+      fs.rmSync(`/tmp/perf-matrix-csharp-${opts.runId}`, { recursive: true, force: true });
+      fs.rmSync(tarPath, { force: true });
       console.log(`[gcp] C# worker package uploaded`);
       return `${gcsPrefix}/worker-package-csharp.tar.gz`;
     }
