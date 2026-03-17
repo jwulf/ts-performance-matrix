@@ -447,6 +447,9 @@ async function loadSelectedRun(refresh, stateToRestore) {
     setStatus(`${enrichedData.length} scenarios loaded`);
     overlay.classList.add('hidden');
     persistViewState();
+
+    // Load and render run summary (async, non-blocking)
+    renderRunSummary(runId, enrichedData);
   } catch (e) {
     setStatus('Error: ' + e.message);
     addLogLine('ERROR: ' + e.message);
@@ -459,6 +462,64 @@ async function loadSelectedRun(refresh, stateToRestore) {
 
 function setStatus(text) {
   statusEl.textContent = text;
+}
+
+// ─── Run Summary ─────────────────────────────────────────
+
+async function renderRunSummary(runId, scenarios) {
+  const summaryEl = document.getElementById('run-summary');
+  const itemsEl = document.getElementById('run-summary-items');
+  if (!summaryEl || !itemsEl) return;
+
+  // Compute summary from scenario data
+  const timestamp = parseInt(runId.replace('run-', ''), 10);
+  const runDate = isNaN(timestamp) ? '—' : new Date(timestamp).toLocaleString();
+  const scenarioCount = scenarios.length;
+  const okCount = scenarios.filter((s) => s.status === 'ok').length;
+  const errorCount = scenarios.filter((s) => s.status === 'error').length;
+  const timeoutCount = scenarios.filter((s) => s.status === 'timeout').length;
+  const languages = [...new Set(scenarios.map((s) => s.sdkLanguage))].sort();
+  const clusters = [...new Set(scenarios.map((s) => s.cluster))].sort();
+  const totalWallClock = scenarios.reduce((sum, s) => sum + (s.wallClockS || 0), 0);
+  const formattedDuration = totalWallClock >= 3600
+    ? `${Math.floor(totalWallClock / 3600)}h ${Math.floor((totalWallClock % 3600) / 60)}m`
+    : totalWallClock >= 60
+      ? `${Math.floor(totalWallClock / 60)}m ${Math.round(totalWallClock % 60)}s`
+      : `${Math.round(totalWallClock)}s`;
+
+  let html = '';
+  const item = (label, value, cls) =>
+    `<span class="run-summary-item"><span class="label">${label}</span><span class="value${cls ? ' ' + cls : ''}">${value}</span></span>`;
+
+  html += item('Run', runId, 'accent');
+  html += item('Date', runDate, '');
+  html += item('Scenarios', `${scenarioCount} (${okCount} ok, ${errorCount} err, ${timeoutCount} timeout)`, '');
+  html += item('Languages', languages.join(', '), '');
+  html += item('Clusters', clusters.join(', '), '');
+  html += item('Total Wall Clock', formattedDuration, '');
+
+  // Fetch metadata for SDK versions (best effort)
+  try {
+    const meta = await fetchJson(`/api/runs/${runId}/metadata`);
+    if (meta && meta.sdkVersions) {
+      let badges = '';
+      for (const [lang, ver] of Object.entries(meta.sdkVersions)) {
+        badges += `<span class="sdk-badge"><span class="lang">${lang}</span>${ver}</span>`;
+      }
+      if (badges) {
+        html += `<span class="run-summary-versions">${badges}</span>`;
+      }
+    }
+    if (meta && meta.commit) {
+      html += item('Commit', meta.commit, '');
+    }
+    if (meta && meta.mode) {
+      html += item('Mode', meta.mode, '');
+    }
+  } catch { /* metadata not available — that's fine */ }
+
+  itemsEl.innerHTML = html;
+  summaryEl.classList.remove('hidden');
 }
 
 // ─── Data Enrichment ─────────────────────────────────────

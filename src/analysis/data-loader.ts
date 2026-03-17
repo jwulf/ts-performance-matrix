@@ -11,7 +11,7 @@ import * as path from 'path';
 
 const BUCKET = 'camunda-perf-matrix';
 const CACHE_DIR = '/tmp/analysis-cache';
-const LOCAL_DATA_DIR = path.resolve(import.meta.dirname, '../../..', 'results', 'runs');
+const LOCAL_DATA_DIR = path.resolve(import.meta.dirname, '../..', 'results', 'runs');
 
 function log(msg: string): void {
   console.log(`[${new Date().toISOString()}] [data-loader] ${msg}`);
@@ -67,7 +67,7 @@ function gsutil(args: string[], timeoutMs = 30_000): string {
  */
 function listLocalRuns(): RunInfo[] {
   if (!fs.existsSync(LOCAL_DATA_DIR)) return [];
-  const files = fs.readdirSync(LOCAL_DATA_DIR).filter((f) => f.startsWith('run-') && f.endsWith('.json'));
+  const files = fs.readdirSync(LOCAL_DATA_DIR).filter((f) => f.startsWith('run-') && f.endsWith('.json') && !f.endsWith('.meta.json'));
   return files.map((f) => {
     const runId = f.replace('.json', '');
     const ts = parseInt(runId.replace('run-', ''), 10);
@@ -141,6 +141,51 @@ export function listRuns(): RunInfo[] {
 }
 
 export type ProgressCallback = (msg: string) => void;
+
+/**
+ * Load metadata for a run (if available).
+ * Checks local repo sidecar (run-XXX.meta.json) → /tmp cache sidecar → GCS metadata.json.
+ * Returns null if no metadata is found.
+ */
+export function loadRunMetadata(runId: string): Record<string, any> | null {
+  // 1. Local committed metadata sidecar
+  const localMeta = path.join(LOCAL_DATA_DIR, `${runId}.meta.json`);
+  if (fs.existsSync(localMeta)) {
+    try {
+      return JSON.parse(fs.readFileSync(localMeta, 'utf-8'));
+    } catch { /* ignore corrupt */ }
+  }
+
+  // 2. /tmp cache sidecar
+  const cacheMeta = path.join(CACHE_DIR, `${runId}.meta.json`);
+  if (fs.existsSync(cacheMeta)) {
+    try {
+      return JSON.parse(fs.readFileSync(cacheMeta, 'utf-8'));
+    } catch { /* ignore corrupt */ }
+  }
+
+  // 3. GCS: try to fetch metadata.json from any lane directory
+  if (hasGsutil()) {
+    const timestamp = runId.replace('run-', '');
+    // Try lane 0 first (always exists)
+    const gcsPath = `gs://${BUCKET}/run-${timestamp}-l0/metadata.json`;
+    const tmpFile = path.join(CACHE_DIR, `tmp-meta-${Date.now()}.json`);
+    try {
+      execSync(`gsutil cp "${gcsPath}" "${tmpFile}"`, {
+        encoding: 'utf-8', timeout: 10_000, stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      const meta = JSON.parse(fs.readFileSync(tmpFile, 'utf-8'));
+      // Cache it locally
+      ensureCacheDir();
+      fs.writeFileSync(cacheMeta, JSON.stringify(meta, null, 2));
+      return meta;
+    } catch { /* not found */ } finally {
+      try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+    }
+  }
+
+  return null;
+}
 
 /**
  * Load all scenario results for a run.

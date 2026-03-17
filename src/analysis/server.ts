@@ -5,7 +5,7 @@
 import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
-import { listRuns, loadRun, type ProgressCallback } from './data-loader.js';
+import { listRuns, loadRun, loadRunMetadata, type ProgressCallback } from './data-loader.js';
 
 const PORT = parseInt(process.env.PORT || '4000', 10);
 const PUBLIC_DIR = path.resolve(import.meta.dirname, 'public');
@@ -129,6 +129,21 @@ const server = http.createServer((req, res) => {
         console.error(e.stack);
         sendError(res, 500, e.message);
       }
+    }
+    return;
+  }
+
+  // Run metadata endpoint
+  const metaMatch = pathname.match(/^\/api\/runs\/([^/]+)\/metadata$/);
+  if (metaMatch && req.method === 'GET') {
+    const runId = metaMatch[1];
+    try {
+      const meta = loadRunMetadata(runId);
+      log(`  → 200 metadata for ${runId} (${meta ? 'found' : 'null'}, ${Date.now() - t0}ms)`);
+      sendJson(res, meta);
+    } catch (e: any) {
+      log(`  → 500 ERROR loading metadata for ${runId}: ${e.message}`);
+      sendError(res, 500, e.message);
     }
     return;
   }

@@ -199,6 +199,13 @@ function saveResult(result: ScenarioResult, mode: string, runId: string): void {
   );
 }
 
+interface SdkVersions {
+  ts?: string;
+  python?: string;
+  csharp?: string;
+  java?: string;
+}
+
 interface RunMetadata {
   runId: string;
   mode: string;
@@ -209,6 +216,7 @@ interface RunMetadata {
   scenarioCount: number;
   scenariosCompleted: number;
   lanes: number;
+  sdkVersions: SdkVersions;
   cliArgs: Record<string, string | boolean | undefined>;
   gcpProject?: string;
   gcpZone?: string;
@@ -222,6 +230,46 @@ function getGitCommit(): string {
   } catch {
     return 'unknown';
   }
+}
+
+/** Read SDK versions from the local project config files. */
+function collectSdkVersions(): SdkVersions {
+  const versions: SdkVersions = {};
+
+  // TypeScript: read from package.json
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf-8'));
+    const dep = pkg.dependencies?.['@camunda8/orchestration-cluster-api'];
+    if (dep) versions.ts = dep;
+  } catch { /* best effort */ }
+
+  // Java: read camunda.client.version from pom.xml
+  try {
+    const pom = fs.readFileSync(path.join(REPO_ROOT, 'src/workers/java-worker/pom.xml'), 'utf-8');
+    const match = pom.match(/<camunda\.client\.version>([^<]+)<\/camunda\.client\.version>/);
+    if (match) versions.java = match[1];
+  } catch { /* best effort */ }
+
+  // C#: read PackageReference from .csproj
+  try {
+    const csproj = fs.readFileSync(path.join(REPO_ROOT, 'src/workers/csharp-worker/CsharpWorker.csproj'), 'utf-8');
+    const match = csproj.match(/Include="Camunda\.Orchestration\.Sdk"\s+Version="([^"]+)"/);
+    if (match) versions.csharp = match[1];
+  } catch { /* best effort */ }
+
+  // Python: installed via pip --pre (latest prerelease)
+  try {
+    const { execSync } = require('child_process');
+    const output = execSync('pip show camunda-orchestration-sdk 2>/dev/null || pip3 show camunda-orchestration-sdk 2>/dev/null', {
+      encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const match = output.match(/Version:\s*(\S+)/);
+    if (match) versions.python = match[1];
+  } catch {
+    versions.python = 'latest-prerelease';
+  }
+
+  return versions;
 }
 
 function writeMetadata(metadata: RunMetadata): void {
@@ -370,6 +418,7 @@ async function runLocal(): Promise<void> {
     scenarioCount: scenarios.length,
     scenariosCompleted: 0,
     lanes: 1,
+    sdkVersions: collectSdkVersions(),
     cliArgs: {
       local: true,
       resume: argv.resume as boolean | undefined,
@@ -379,6 +428,7 @@ async function runLocal(): Promise<void> {
   };
   writeMetadata(currentMetadata);
   console.log(`Local Run ID: ${runId}`);
+  console.log(`SDK versions: ${JSON.stringify(currentMetadata.sdkVersions)}`);
 
   // Group by cluster to minimize restarts
   const byCluster = new Map<string, typeof scenarios>();
@@ -464,6 +514,7 @@ async function runGcp(): Promise<void> {
     scenarioCount: scenarios.length,
     scenariosCompleted: 0,
     lanes,
+    sdkVersions: collectSdkVersions(),
     cliArgs: {
       resume: argv.resume as boolean | undefined,
       languages: str(argv.languages),
@@ -477,6 +528,7 @@ async function runGcp(): Promise<void> {
   writeMetadata(currentMetadata);
 
   console.log(`GCP Run ID: ${runId}`);
+  console.log(`SDK versions: ${JSON.stringify(currentMetadata.sdkVersions)}`);
   console.log(`Results: ${currentRunDir}`);
   console.log(`Project: ${gcpOpts.project}, Zone: ${gcpOpts.zone}, Bucket: ${gcpOpts.bucket}`);
 

@@ -519,6 +519,63 @@ tr:hover .copy-id-btn { opacity: 0.8; }
 }
 .saved-views-bar .save-view-btn:hover { border-color: var(--accent); }
 
+/* ─── Run Summary Bar ──────────────────────────────────── */
+.run-summary {
+  padding: 8px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.run-summary-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  align-items: center;
+}
+.run-summary-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.run-summary-item .label {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.run-summary-item .value {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.run-summary-item .value.accent {
+  color: var(--accent);
+}
+.run-summary-versions {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  margin-left: 8px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+.run-summary-versions .sdk-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-muted);
+}
+.run-summary-versions .sdk-badge .lang {
+  font-weight: 600;
+  color: var(--text);
+}
+
 /* ─── Scenario Popover ──────────────────────────────────── */
 .scenario-popover {
   position: fixed;
