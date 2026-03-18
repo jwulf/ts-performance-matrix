@@ -188,6 +188,53 @@ export function loadRunMetadata(runId: string): Record<string, any> | null {
 }
 
 /**
+ * Recompute aggregateThroughput using max worker wallClockS instead of runner wallClockS.
+ *
+ * Old data used `totalCompleted / runnerWallClockS` which included GCS barrier/upload
+ * overhead. The correct metric is `totalCompleted / max(processWallClockS)`.
+ *
+ * We derive per-process wallClockS from `completed / throughput` (both stored in processResults).
+ * Mutates the scenario object in place. Returns true if patched.
+ */
+function patchAggregateThroughput(scenario: any): boolean {
+  const processResults = scenario?.processResults;
+  if (!Array.isArray(processResults) || processResults.length === 0) return false;
+
+  const processWallClocks: number[] = [];
+  for (const p of processResults) {
+    if (typeof p.throughput === 'number' && p.throughput > 0 && typeof p.completed === 'number' && p.completed > 0) {
+      processWallClocks.push(p.completed / p.throughput);
+    }
+  }
+  if (processWallClocks.length === 0) return false;
+
+  const maxProcessWallClockS = Math.max(...processWallClocks);
+  const totalCompleted = typeof scenario.totalCompleted === 'number'
+    ? scenario.totalCompleted
+    : processResults.reduce((s: number, p: any) => s + (p.completed || 0), 0);
+
+  const corrected = maxProcessWallClockS > 0 ? totalCompleted / maxProcessWallClockS : 0;
+
+  // Only patch if the difference is meaningful (>5% — avoids patching data that's already correct)
+  const current = scenario.aggregateThroughput || 0;
+  if (current > 0 && Math.abs(corrected - current) / current < 0.05) return false;
+
+  scenario.aggregateThroughput = corrected;
+  return true;
+}
+
+/**
+ * Patch all scenarios in an array. Returns the number patched.
+ */
+function patchAllScenarios(scenarios: any[]): number {
+  let patched = 0;
+  for (const s of scenarios) {
+    if (patchAggregateThroughput(s)) patched++;
+  }
+  return patched;
+}
+
+/**
  * Load cached scenarios into a Map keyed by scenarioId.
  * Returns an empty map if the cache doesn't exist or is corrupt.
  */
@@ -226,6 +273,8 @@ export function loadRun(runId: string, forceRefresh = false, onProgress?: Progre
   if (!forceRefresh && fs.existsSync(localFile)) {
     try {
       const data = JSON.parse(fs.readFileSync(localFile, 'utf-8'));
+      const patched = patchAllScenarios(data);
+      if (patched > 0) progress(`Patched aggregateThroughput for ${patched} scenarios`);
       progress(`Serving from local repo data: ${data.length} scenarios`);
       return data;
     } catch (e: any) {
@@ -239,6 +288,8 @@ export function loadRun(runId: string, forceRefresh = false, onProgress?: Progre
   if (!forceRefresh && fs.existsSync(cacheFile)) {
     try {
       const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf-8'));
+      const patched = patchAllScenarios(cached);
+      if (patched > 0) progress(`Patched aggregateThroughput for ${patched} scenarios`);
       progress(`Serving from cache: ${cached.length} scenarios`);
       return cached;
     } catch (e: any) {
@@ -331,11 +382,13 @@ export function loadRun(runId: string, forceRefresh = false, onProgress?: Progre
     }
   }
 
-  // Cache the merged results
+  // Cache the merged results (with patched throughput)
   const results = Array.from(resultMap.values());
+  const patched = patchAllScenarios(results);
+  if (patched > 0) progress(`Patched aggregateThroughput for ${patched} scenarios`);
   fs.writeFileSync(cacheFile, JSON.stringify(results, null, 2));
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-  progress(`Done: ${results.length} scenarios (${fetchedNew} new, ${cachedScenarios.size} cached), ${skippedNoSummary} skipped (no summary), ${elapsed}s`);
+  progress(`Done: ${results.length} scenarios (${fetchedNew} new, ${patched} patched, ${cachedScenarios.size} cached), ${skippedNoSummary} skipped (no summary), ${elapsed}s`);
 
   return results;
 }

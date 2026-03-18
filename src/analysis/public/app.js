@@ -358,6 +358,7 @@ async function loadSelectedRun(refresh, stateToRestore) {
   let fetchedCount = 0;
   let totalLanes = 0;
   let phase = 'init'; // init | scanning | fetching | done
+  let cachedCount = 0;
 
   function addLogLine(msg) {
     const line = document.createElement('div');
@@ -367,22 +368,44 @@ async function loadSelectedRun(refresh, stateToRestore) {
     loadingLog.scrollTop = loadingLog.scrollHeight;
 
     // Parse progress messages to update stats/progress bar
+    const incrementalMatch = msg.match(/Incremental refresh: (\d+) scenarios already cached/);
+    if (incrementalMatch) {
+      cachedCount = parseInt(incrementalMatch[1]);
+      loadingStats.textContent = `${cachedCount} cached, checking for new...`;
+    }
+
     const lanesMatch = msg.match(/Found (\d+) lanes/);
     if (lanesMatch) {
       totalLanes = parseInt(lanesMatch[1]);
       phase = 'scanning';
     }
 
-    const fetchedMatch = msg.match(/Fetched .+\((\d+) total\)/);
+    const fetchedMatch = msg.match(/Fetched .+\((\d+) new, (\d+) total\)/);
     if (fetchedMatch) {
       fetchedCount = parseInt(fetchedMatch[1]);
+      const totalCount = parseInt(fetchedMatch[2]);
+      phase = 'fetching';
+      loadingStats.textContent = cachedCount > 0
+        ? `${fetchedCount} new + ${cachedCount} cached = ${totalCount} scenarios`
+        : `${totalCount} scenarios fetched`;
+    }
+
+    // Legacy format: "Fetched X (N total)"
+    const fetchedLegacy = msg.match(/Fetched .+\((\d+) total\)/);
+    if (!fetchedMatch && fetchedLegacy) {
+      fetchedCount = parseInt(fetchedLegacy[1]);
       phase = 'fetching';
       loadingStats.textContent = `${fetchedCount} scenarios fetched`;
     }
 
-    const scanMatch = msg.match(/Scanning (lane-\d+)/);
+    const scanMatch = msg.match(/Scanning (run-[^\s]+)/);
     if (scanMatch && phase !== 'fetching') {
       loadingStats.textContent = `Scanning ${scanMatch[1]}...`;
+    }
+
+    const patchMatch = msg.match(/Patched aggregateThroughput for (\d+) scenarios/);
+    if (patchMatch) {
+      loadingStats.textContent = `Patched throughput for ${patchMatch[1]} scenarios`;
     }
 
     const servingMatch = msg.match(/Serving from (?:cache|local)/);
@@ -391,7 +414,7 @@ async function loadSelectedRun(refresh, stateToRestore) {
       loadingStats.textContent = msg;
     }
 
-    const doneMatch = msg.match(/Done: (\d+) scenarios loaded/);
+    const doneMatch = msg.match(/Done: (\d+) scenarios/);
     if (doneMatch) {
       phase = 'done';
       progressFill.style.width = '100%';

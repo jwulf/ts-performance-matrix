@@ -561,6 +561,7 @@ export async function runScenarioLocal(
 
   // Collect results
   const processResults: ProcessResult[] = [];
+  const processWallClocks: number[] = [];
   for (let p = 0; p < P; p++) {
     const processId = `process-${p}`;
     const resultFile = path.join(resultsDir, `${processId}.json`);
@@ -577,6 +578,9 @@ export async function runScenarioLocal(
         perWorkerCompleted: data.perWorkerCompleted || [],
         perWorkerErrors: data.perWorkerErrors || [],
       });
+      if (typeof data.wallClockS === 'number' && data.wallClockS > 0) {
+        processWallClocks.push(data.wallClockS);
+      }
     } catch {
       processResults.push({
         processId,
@@ -594,7 +598,9 @@ export async function runScenarioLocal(
   // Aggregate
   const totalCompleted = processResults.reduce((s, p) => s + p.completed, 0);
   const totalErrors = processResults.reduce((s, p) => s + p.errors, 0);
-  const aggregateThroughput = wallClockS > 0 ? totalCompleted / wallClockS : 0;
+  // Use max worker wallClockS for throughput (avoids process startup/exit overhead inflating the denominator)
+  const maxProcessWallClockS = processWallClocks.length > 0 ? Math.max(...processWallClocks) : wallClockS;
+  const aggregateThroughput = maxProcessWallClockS > 0 ? totalCompleted / maxProcessWallClockS : 0;
 
   // Fairness across all individual workers
   const allWorkerThroughputs = processResults.flatMap((p) => p.perWorkerThroughputs);
