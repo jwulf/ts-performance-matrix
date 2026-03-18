@@ -503,12 +503,15 @@ async function renderRunSummary(runId, scenarios) {
   const timeoutCount = scenarios.filter((s) => s.status === 'timeout').length;
   const languages = [...new Set(scenarios.map((s) => s.sdkLanguage))].sort();
   const clusters = [...new Set(scenarios.map((s) => s.cluster))].sort();
-  const totalWallClock = scenarios.reduce((sum, s) => sum + (s.wallClockS || 0), 0);
-  const formattedDuration = totalWallClock >= 3600
-    ? `${Math.floor(totalWallClock / 3600)}h ${Math.floor((totalWallClock % 3600) / 60)}m`
-    : totalWallClock >= 60
-      ? `${Math.floor(totalWallClock / 60)}m ${Math.round(totalWallClock % 60)}s`
-      : `${Math.round(totalWallClock)}s`;
+  // Elapsed time from run start to now.
+  // We do NOT sum per-scenario wallClockS because lanes run in parallel —
+  // that would double/triple-count time for multi-lane runs.
+  let elapsedS = !isNaN(timestamp) ? (Date.now() - timestamp) / 1000 : 0;
+  const formattedDuration = elapsedS >= 3600
+    ? `${Math.floor(elapsedS / 3600)}h ${Math.floor((elapsedS % 3600) / 60)}m`
+    : elapsedS >= 60
+      ? `${Math.floor(elapsedS / 60)}m ${Math.round(elapsedS % 60)}s`
+      : `${Math.round(elapsedS)}s`;
 
   let html = '';
   const item = (label, value, cls) =>
@@ -519,7 +522,7 @@ async function renderRunSummary(runId, scenarios) {
   html += item('Scenarios', `${scenarioCount} (${okCount} ok, ${errorCount} err, ${timeoutCount} timeout)`, '');
   html += item('Languages', languages.join(', '), '');
   html += item('Clusters', clusters.join(', '), '');
-  html += item('Total Wall Clock', formattedDuration, '');
+  html += item('Elapsed', formattedDuration, '');
 
   // Fetch metadata for SDK versions (best effort)
   try {
