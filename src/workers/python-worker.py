@@ -15,7 +15,6 @@ import asyncio
 import json
 import math
 import os
-import resource
 import sys
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -136,10 +135,20 @@ class MemorySampler:
         self._samples = []
         self._running = False
         self._thread = None
+        self._page_size = os.sysconf("SC_PAGE_SIZE")
+
+    def _read_rss_bytes(self):
+        """Read current process RSS from /proc/self/statm (Linux). Returns bytes."""
+        try:
+            with open("/proc/self/statm", "r") as f:
+                fields = f.read().split()
+            return int(fields[1]) * self._page_size
+        except Exception:
+            return 0
 
     def start(self):
         self._running = True
-        self._samples.append(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        self._samples.append(self._read_rss_bytes())
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -147,14 +156,12 @@ class MemorySampler:
         while self._running:
             time.sleep(5)
             if self._running:
-                self._samples.append(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+                self._samples.append(self._read_rss_bytes())
 
     def stop(self):
         self._running = False
-        self._samples.append(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-        # ru_maxrss is in KB on Linux, bytes on macOS
-        divisor = 1024 if sys.platform == "linux" else (1024 * 1024)
-        mbs = [s / divisor for s in self._samples]
+        self._samples.append(self._read_rss_bytes())
+        mbs = [s / (1024 * 1024) for s in self._samples]
         peak = max(mbs) if mbs else 0
         avg = sum(mbs) / len(mbs) if mbs else 0
         return {

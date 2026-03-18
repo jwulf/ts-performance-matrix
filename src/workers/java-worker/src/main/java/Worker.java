@@ -119,18 +119,16 @@ public class Worker {
 
             System.out.println("[java-worker] GO received, starting benchmark...");
 
-            // Start memory sampling
+            // Start memory sampling (RSS via /proc/self/statm on Linux)
             var memSamples = new ArrayList<Long>();
             var memSamplerRunning = new AtomicBoolean(true);
             var memSampler = new Thread(() -> {
+                memSamples.add(readRssBytes());
                 while (memSamplerRunning.get()) {
-                    var rt = Runtime.getRuntime();
-                    memSamples.add(rt.totalMemory() - rt.freeMemory());
                     try { Thread.sleep(5000); } catch (InterruptedException e) { break; }
+                    if (memSamplerRunning.get()) memSamples.add(readRssBytes());
                 }
-                // Final sample
-                var rt = Runtime.getRuntime();
-                memSamples.add(rt.totalMemory() - rt.freeMemory());
+                memSamples.add(readRssBytes());
             }, "mem-sampler");
             memSampler.setDaemon(true);
             memSampler.start();
@@ -174,13 +172,13 @@ public class Worker {
             memSamplerRunning.set(false);
             memSampler.interrupt();
             memSampler.join(1000);
-            double peakHeapMb = 0, sumHeapMb = 0;
+            double peakRssMb = 0, sumRssMb = 0;
             for (var s : memSamples) {
                 double mb = s / (1024.0 * 1024.0);
-                if (mb > peakHeapMb) peakHeapMb = mb;
-                sumHeapMb += mb;
+                if (mb > peakRssMb) peakRssMb = mb;
+                sumRssMb += mb;
             }
-            double avgHeapMb = memSamples.isEmpty() ? 0 : sumHeapMb / memSamples.size();
+            double avgRssMb = memSamples.isEmpty() ? 0 : sumRssMb / memSamples.size();
 
             var output = mapper.createObjectNode();
             output.put("processId", PROCESS_ID);
@@ -197,8 +195,8 @@ public class Worker {
             output.set("perWorkerThroughputs", doubleArrayToJson(perWorkerThroughputs));
             output.set("errorTypes", mapper.valueToTree(errorTypeCounts));
             var memNode = mapper.createObjectNode();
-            memNode.put("peakHeapMb", Math.round(peakHeapMb * 10.0) / 10.0);
-            memNode.put("avgHeapMb", Math.round(avgHeapMb * 10.0) / 10.0);
+            memNode.put("peakRssMb", Math.round(peakRssMb * 10.0) / 10.0);
+            memNode.put("avgRssMb", Math.round(avgRssMb * 10.0) / 10.0);
             memNode.put("samples", memSamples.size());
             output.set("memoryUsage", memNode);
 
@@ -213,6 +211,19 @@ public class Worker {
             e.printStackTrace(System.err);
             writeErrorResult(e.getMessage());
             System.exit(1);
+        }
+    }
+
+    // ─── Memory helper ───────────────────────────────────────
+
+    /** Read current process RSS from /proc/self/statm (Linux). Returns bytes, or 0 on failure. */
+    static long readRssBytes() {
+        try {
+            String statm = Files.readString(Path.of("/proc/self/statm"));
+            long rssPages = Long.parseLong(statm.trim().split("\\s+")[1]);
+            return rssPages * 4096L;
+        } catch (Exception e) {
+            return 0L;
         }
     }
 
