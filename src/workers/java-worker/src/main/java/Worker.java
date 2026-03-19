@@ -420,7 +420,11 @@ public class Worker {
             exchange.getResponseBody().write(body);
             exchange.close();
         });
-        server.setExecutor(Executors.newCachedThreadPool());
+        server.setExecutor(Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r);
+            t.setDaemon(true);
+            return t;
+        }));
         server.start();
         return server.getAddress().getPort();
     }

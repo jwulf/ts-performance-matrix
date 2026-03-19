@@ -17,8 +17,8 @@
     "build:index": "node --import tsx/esm scripts/build-run-index.ts"
   },
   "dependencies": {
-    "@camunda8/orchestration-cluster-api": "^8.9.0-alpha.14",
-    "@camunda8/sdk": "^8.8.8",
+    "@camunda8/orchestration-cluster-api": "^8.9.0-alpha.15",
+    "@camunda8/sdk": "^8.8.9",
     "@google-cloud/compute": "^6.8.0",
     "@types/node": "^25.4.0",
     "tsx": "^4.21.0",

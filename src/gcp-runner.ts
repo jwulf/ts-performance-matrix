@@ -386,6 +386,7 @@ function buildWorkerPackage(opts: GcpOptions, language: SdkLanguage): string {
         'package.json',
         'node_modules',
         'src/worker-process.ts',
+        'src/threaded-handler.ts',
         'src/ts-producer.ts',
         'tsconfig.json',
       ]);
