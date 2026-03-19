@@ -16,8 +16,8 @@
     "analysis": "node --import tsx/esm src/analysis/server.ts"
   },
   "dependencies": {
-    "@camunda8/orchestration-cluster-api": "^8.9.0-alpha.13",
-    "@camunda8/sdk": "^8.8.7",
+    "@camunda8/orchestration-cluster-api": "^8.9.0-alpha.14",
+    "@camunda8/sdk": "^8.8.8",
     "@google-cloud/compute": "^6.8.0",
     "@types/node": "^25.4.0",
     "tsx": "^4.21.0",
