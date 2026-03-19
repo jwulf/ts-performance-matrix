@@ -1191,6 +1191,37 @@ function parsePrometheusText(text: string): MetricsSnapshot {
   return snap;
 }
 
+/** Scrape disk usage from all brokers in the pool via SSH, summing across nodes. */
+async function scrapeDiskUsageGcp(opts: GcpOptions, pool: BrokerPool): Promise<{ usedBytes: number; totalBytes: number }> {
+  // df --output=used,size outputs 1K-blocks; parse both columns
+  const dfCmd = "df --output=used,size / 2>/dev/null | tail -1";
+
+  const results = await Promise.all(
+    pool.vmNames.map(async (vm, i) => {
+      try {
+        const r = isRunningOnGcpVm()
+          ? await spawnAsync('ssh', ['-o', 'StrictHostKeyChecking=no', pool.internalIps[i], dfCmd], 15_000)
+          : await gcloudAsync(sshArgs(opts, vm, dfCmd), 30_000);
+        if (r.exitCode === 0 && r.stdout.trim()) {
+          const parts = r.stdout.trim().split(/\s+/);
+          if (parts.length >= 2) {
+            return {
+              usedBytes: parseInt(parts[0], 10) * 1024,
+              totalBytes: parseInt(parts[1], 10) * 1024,
+            };
+          }
+        }
+      } catch { /* skip */ }
+      return { usedBytes: 0, totalBytes: 0 };
+    }),
+  );
+
+  return results.reduce(
+    (acc, r) => ({ usedBytes: acc.usedBytes + r.usedBytes, totalBytes: acc.totalBytes + r.totalBytes }),
+    { usedBytes: 0, totalBytes: 0 },
+  );
+}
+
 /** Scrape Prometheus from all brokers in the pool via SSH, summing across nodes. */
 async function scrapeMetricsGcp(opts: GcpOptions, pool: BrokerPool): Promise<MetricsSnapshot> {
   const combined: MetricsSnapshot = { counters: {}, histCounts: {}, histSums: {}, gauges: {} };
@@ -1232,6 +1263,8 @@ interface GaugeSample {
   systemCpu: number;        // sum of system_cpu_usage across brokers
   memoryUsedBytes: number;  // sum of jvm_memory_used_bytes across brokers
   liveThreads: number;      // sum of jvm_threads_live_threads across brokers
+  diskUsedBytes: number;    // sum of disk used bytes across brokers
+  diskTotalBytes: number;   // sum of disk total bytes across brokers
 }
 
 /**
@@ -1247,13 +1280,18 @@ async function sampleGaugesDuring(
   const samples: GaugeSample[] = [];
   while (!abortSignal.aborted) {
     try {
-      const snap = await scrapeMetricsGcp(opts, pool);
+      const [snap, disk] = await Promise.all([
+        scrapeMetricsGcp(opts, pool),
+        scrapeDiskUsageGcp(opts, pool),
+      ]);
       samples.push({
         timestampMs: Date.now(),
         processCpu: snap.gauges['process_cpu_usage'] || 0,
         systemCpu: snap.gauges['system_cpu_usage'] || 0,
         memoryUsedBytes: snap.gauges['jvm_memory_used_bytes'] || 0,
         liveThreads: snap.gauges['jvm_threads_live_threads'] || 0,
+        diskUsedBytes: disk.usedBytes,
+        diskTotalBytes: disk.totalBytes,
       });
     } catch {
       // Scrape failed — skip this sample
@@ -1279,6 +1317,11 @@ function computeResourceUsage(samples: GaugeSample[], brokerCount: number): Serv
   const memMb = samples.map((s) => s.memoryUsedBytes / (1024 * 1024));
   const threads = samples.map((s) => s.liveThreads);
 
+  // Disk usage: summed across brokers (GB)
+  const diskUsedGb = samples.map((s) => s.diskUsedBytes / (1024 * 1024 * 1024));
+  const diskTotalGb = samples.map((s) => s.diskTotalBytes / (1024 * 1024 * 1024));
+  const diskUsedPct = samples.map((s) => s.diskTotalBytes > 0 ? (s.diskUsedBytes / s.diskTotalBytes) * 100 : 0);
+
   return {
     samples: samples.length,
     cpuAvg: avg(cpuPerBroker),
@@ -1289,6 +1332,10 @@ function computeResourceUsage(samples: GaugeSample[], brokerCount: number): Serv
     memoryUsedPeakMb: peak(memMb),
     liveThreadsAvg: avg(threads),
     liveThreadsPeak: peak(threads),
+    diskUsedAvgGb: avg(diskUsedGb),
+    diskUsedPeakGb: peak(diskUsedGb),
+    diskTotalGb: diskTotalGb[0] || 0,
+    diskUsedPctPeak: peak(diskUsedPct),
   };
 }
 

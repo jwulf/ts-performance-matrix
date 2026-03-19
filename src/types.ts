@@ -49,6 +49,10 @@ export interface ServerResourceUsage {
   memoryUsedPeakMb: number;  // jvm_memory_used_bytes peak total across brokers (MB)
   liveThreadsAvg: number;    // jvm_threads_live_threads avg total across brokers
   liveThreadsPeak: number;   // jvm_threads_live_threads peak total across brokers
+  diskUsedAvgGb: number;     // disk used avg across brokers (GB)
+  diskUsedPeakGb: number;    // disk used peak across brokers (GB)
+  diskTotalGb: number;       // disk total per broker (GB, from first sample)
+  diskUsedPctPeak: number;   // peak disk used percentage across brokers
 }
 
 export interface ScenarioResult {

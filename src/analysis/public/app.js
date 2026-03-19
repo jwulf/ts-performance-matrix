@@ -30,6 +30,9 @@ const BASE_METRICS = [
   { key: 'serverMemAvgMb', label: 'Srv Mem Avg', format: (v) => v != null ? v.toFixed(0) + ' MB' : '—', nested: true },
   { key: 'serverMemPeakMb', label: 'Srv Mem Peak', format: (v) => v != null ? v.toFixed(0) + ' MB' : '—', nested: true },
   { key: 'serverThreadsAvg', label: 'Srv Threads', format: (v) => v != null ? Math.round(v).toString() : '—', nested: true },
+  { key: 'serverDiskUsedAvgGb', label: 'Srv Disk Avg', format: (v) => v != null ? v.toFixed(2) + ' GB' : '—', nested: true },
+  { key: 'serverDiskUsedPeakGb', label: 'Srv Disk Peak', format: (v) => v != null ? v.toFixed(2) + ' GB' : '—', nested: true },
+  { key: 'serverDiskPctPeak', label: 'Srv Disk %', format: (v) => v != null ? v.toFixed(1) + '%' : '—', nested: true },
   { key: 'clientMemAvgMb', label: 'Client Mem Avg', format: (v) => v != null ? v.toFixed(1) + ' MB' : '—', computed: true },
   { key: 'clientMemPeakMb', label: 'Client Mem Peak', format: (v) => v != null ? v.toFixed(1) + ' MB' : '—', computed: true },
 ];
@@ -567,12 +570,18 @@ function enrichScenario(s) {
     enriched.serverMemAvgMb = s.serverResourceUsage.memoryUsedAvgMb;
     enriched.serverMemPeakMb = s.serverResourceUsage.memoryUsedPeakMb;
     enriched.serverThreadsAvg = s.serverResourceUsage.liveThreadsAvg;
+    enriched.serverDiskUsedAvgGb = s.serverResourceUsage.diskUsedAvgGb;
+    enriched.serverDiskUsedPeakGb = s.serverResourceUsage.diskUsedPeakGb;
+    enriched.serverDiskPctPeak = s.serverResourceUsage.diskUsedPctPeak;
   } else {
     enriched.serverCpuAvg = null;
     enriched.serverCpuPeak = null;
     enriched.serverMemAvgMb = null;
     enriched.serverMemPeakMb = null;
     enriched.serverThreadsAvg = null;
+    enriched.serverDiskUsedAvgGb = null;
+    enriched.serverDiskUsedPeakGb = null;
+    enriched.serverDiskPctPeak = null;
   }
 
   // Client memory — aggregate from processResults if they have memoryUsage
@@ -916,6 +925,9 @@ function getMetricValue(row, key) {
   if (key === 'serverMemAvgMb') return row.serverMemAvgMb;
   if (key === 'serverMemPeakMb') return row.serverMemPeakMb;
   if (key === 'serverThreadsAvg') return row.serverThreadsAvg;
+  if (key === 'serverDiskUsedAvgGb') return row.serverDiskUsedAvgGb;
+  if (key === 'serverDiskUsedPeakGb') return row.serverDiskUsedPeakGb;
+  if (key === 'serverDiskPctPeak') return row.serverDiskPctPeak;
   return row[key];
 }
 
@@ -1041,6 +1053,9 @@ function openScenarioPopover(row) {
       ['Memory Avg', row.serverMemAvgMb != null ? row.serverMemAvgMb.toFixed(0) + ' MB' : '—'],
       ['Memory Peak', row.serverMemPeakMb != null ? row.serverMemPeakMb.toFixed(0) + ' MB' : '—'],
       ['Threads Avg', row.serverThreadsAvg != null ? Math.round(row.serverThreadsAvg).toString() : '—'],
+      ['Disk Used Avg', row.serverDiskUsedAvgGb != null ? row.serverDiskUsedAvgGb.toFixed(2) + ' GB' : '—'],
+      ['Disk Used Peak', row.serverDiskUsedPeakGb != null ? row.serverDiskUsedPeakGb.toFixed(2) + ' GB' : '—'],
+      ['Disk Used %', row.serverDiskPctPeak != null ? row.serverDiskPctPeak.toFixed(1) + '%' : '—'],
     ]);
     body.appendChild(serverSection);
   }

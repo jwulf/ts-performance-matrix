@@ -407,6 +407,10 @@ function computeResourceUsageLocal(samples: GaugeSample[]): ServerResourceUsage 
     memoryUsedPeakMb: peak(memMb),
     liveThreadsAvg: avg(threads),
     liveThreadsPeak: peak(threads),
+    diskUsedAvgGb: 0,
+    diskUsedPeakGb: 0,
+    diskTotalGb: 0,
+    diskUsedPctPeak: 0,
   };
 }
 
