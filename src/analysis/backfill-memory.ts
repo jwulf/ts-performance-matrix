@@ -19,6 +19,14 @@ function log(msg: string) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
+/** Return true if memoryUsage contains real RSS data (not legacy JVM heap). */
+function hasRealRssData(mem: any): boolean {
+  if (!mem || typeof mem !== 'object') return false;
+  // Legacy Java data has peakHeapMb/avgHeapMb — not real RSS, discard it
+  if (typeof mem.peakHeapMb === 'number' || typeof mem.avgHeapMb === 'number') return false;
+  return typeof mem.peakRssMb === 'number';
+}
+
 function gsutilCat(gcsPath: string): string | null {
   try {
     return execSync(`gsutil cat "${gcsPath}"`, {
@@ -82,7 +90,7 @@ async function backfill(runId: string) {
         // While we're at it, parse process-0
         try {
           const parsed = JSON.parse(raw);
-          if (parsed.memoryUsage && procs[0]) {
+          if (hasRealRssData(parsed.memoryUsage) && procs[0]) {
             procs[0].memoryUsage = parsed.memoryUsage;
             scenarioPatched = true;
           }
@@ -105,7 +113,7 @@ async function backfill(runId: string) {
       if (raw) {
         try {
           const parsed = JSON.parse(raw);
-          if (parsed.memoryUsage) {
+          if (hasRealRssData(parsed.memoryUsage)) {
             proc.memoryUsage = parsed.memoryUsage;
             scenarioPatched = true;
           }

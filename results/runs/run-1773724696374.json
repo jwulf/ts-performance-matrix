@@ -294,7 +294,7 @@
     "totalCompleted": 42526,
     "totalErrors": 0,
     "wallClockS": 317.963,
-    "aggregateThroughput": 133.74512128769697,
+    "aggregateThroughput": 141.73218898270423,
     "jainFairness": 0.99994199250422,
     "processResults": [
       {
@@ -577,7 +577,7 @@
     "totalCompleted": 31112,
     "totalErrors": 0,
     "wallClockS": 372.519,
-    "aggregateThroughput": 83.51788767821239,
+    "aggregateThroughput": 103.33096038307474,
     "jainFairness": 0.9999650007179712,
     "processResults": [
       {
@@ -860,7 +860,7 @@
     "totalCompleted": 43251,
     "totalErrors": 5,
     "wallClockS": 319.625,
-    "aggregateThroughput": 135.3179507235041,
+    "aggregateThroughput": 144.13883248020676,
     "jainFairness": 0.999948928023054,
     "processResults": [
       {
@@ -1145,7 +1145,7 @@
     "totalCompleted": 1498,
     "totalErrors": 0,
     "wallClockS": 393.369,
-    "aggregateThroughput": 3.8081292628549783,
+    "aggregateThroughput": 4.9885235340144245,
     "jainFairness": 0.9999928699387705,
     "processResults": [
       {
@@ -1474,7 +1474,7 @@
     "totalCompleted": 38841,
     "totalErrors": 1935,
     "wallClockS": 365.937,
-    "aggregateThroughput": 106.14122102984939,
+    "aggregateThroughput": 129.44439628976747,
     "jainFairness": 0.9997242434542097,
     "processResults": [
       {
@@ -1601,7 +1601,7 @@
     "totalCompleted": 22967,
     "totalErrors": 5690,
     "wallClockS": 326.418,
-    "aggregateThroughput": 70.36070314749799,
+    "aggregateThroughput": 76.52434425674625,
     "jainFairness": 0.9998677460572062,
     "processResults": [
       {
@@ -1913,7 +1913,7 @@
     "totalCompleted": 41664,
     "totalErrors": 996,
     "wallClockS": 316.315,
-    "aggregateThroughput": 131.71680128985346,
+    "aggregateThroughput": 138.85745183726672,
     "jainFairness": 0.9999816554970683,
     "processResults": [
       {
@@ -2106,7 +2106,7 @@
     "totalCompleted": 26905,
     "totalErrors": 0,
     "wallClockS": 327.368,
-    "aggregateThroughput": 82.18579702353315,
+    "aggregateThroughput": 88.85539508584426,
     "jainFairness": 0.9976873131472098,
     "processResults": [
       {
@@ -2289,7 +2289,7 @@
     "totalCompleted": 41662,
     "totalErrors": 1189,
     "wallClockS": 328.559,
-    "aggregateThroughput": 126.80218773492736,
+    "aggregateThroughput": 138.847656262179,
     "jainFairness": 0.9996072699790977,
     "processResults": [
       {
@@ -2483,7 +2483,7 @@
     "totalCompleted": 29377,
     "totalErrors": 0,
     "wallClockS": 342.487,
-    "aggregateThroughput": 85.77551848683306,
+    "aggregateThroughput": 97.37005201383343,
     "jainFairness": 0.9999022336302049,
     "processResults": [
       {
@@ -2996,7 +2996,7 @@
     "totalCompleted": 43665,
     "totalErrors": 0,
     "wallClockS": 318.163,
-    "aggregateThroughput": 137.24097396617458,
+    "aggregateThroughput": 145.51539878484732,
     "jainFairness": 0.99975662427506,
     "processResults": [
       {
@@ -4535,7 +4535,7 @@
     "totalCompleted": 14695,
     "totalErrors": 0,
     "wallClockS": 348.416,
-    "aggregateThroughput": 42.176593497428364,
+    "aggregateThroughput": 48.727083948636185,
     "jainFairness": 0.9997572815639406,
     "processResults": [
       {
@@ -5494,7 +5494,7 @@
     "totalCompleted": 43917,
     "totalErrors": 3056,
     "wallClockS": 317.586,
-    "aggregateThroughput": 138.28380344221722,
+    "aggregateThroughput": 146.3561067240115,
     "jainFairness": 0.9987727004569715,
     "processResults": [
       {
@@ -5828,7 +5828,7 @@
     "totalCompleted": 2791,
     "totalErrors": 0,
     "wallClockS": 316.492,
-    "aggregateThroughput": 8.818548336134878,
+    "aggregateThroughput": 9.26673375887956,
     "jainFairness": 0.9999839584409648,
     "processResults": [
       {
@@ -6140,7 +6140,7 @@
     "totalCompleted": 15360,
     "totalErrors": 0,
     "wallClockS": 340.093,
-    "aggregateThroughput": 45.1641168739139,
+    "aggregateThroughput": 50.10577406739205,
     "jainFairness": 0.9999960637943304,
     "processResults": [
       {
@@ -6293,7 +6293,7 @@
     "totalCompleted": 31973,
     "totalErrors": 13702,
     "wallClockS": 322.338,
-    "aggregateThroughput": 99.19091140355775,
+    "aggregateThroughput": 106.55297605197224,
     "jainFairness": 0.9955057912205874,
     "processResults": [
       {
@@ -6452,7 +6452,7 @@
     "totalCompleted": 44557,
     "totalErrors": 1471,
     "wallClockS": 318.07,
-    "aggregateThroughput": 140.08551576696954,
+    "aggregateThroughput": 148.3314374387515,
     "jainFairness": 0.999766004992084,
     "processResults": [
       {
@@ -6653,7 +6653,7 @@
     "totalCompleted": 39146,
     "totalErrors": 9750,
     "wallClockS": 332.032,
-    "aggregateThroughput": 117.89827486507325,
+    "aggregateThroughput": 130.4417870132609,
     "jainFairness": 0.9990364237555068,
     "processResults": [
       {
@@ -7560,7 +7560,7 @@
     "totalCompleted": 38421,
     "totalErrors": 1051,
     "wallClockS": 319.082,
-    "aggregateThroughput": 120.41105421177002,
+    "aggregateThroughput": 128.04784208323898,
     "jainFairness": 0.9893900820279802,
     "processResults": [
       {
@@ -10974,7 +10974,7 @@
     "totalCompleted": 42679,
     "totalErrors": 0,
     "wallClockS": 323.345,
-    "aggregateThroughput": 131.9921446133387,
+    "aggregateThroughput": 142.234535349708,
     "jainFairness": 0.9473435157372053,
     "processResults": [
       {
@@ -12177,7 +12177,7 @@
     "totalCompleted": 40758,
     "totalErrors": 0,
     "wallClockS": 318.125,
-    "aggregateThroughput": 128.11944990176818,
+    "aggregateThroughput": 135.82120077431287,
     "jainFairness": 0.9594998508246095,
     "processResults": [
       {
@@ -13380,7 +13380,7 @@
     "totalCompleted": 12951,
     "totalErrors": 0,
     "wallClockS": 340.971,
-    "aggregateThroughput": 37.98270234125483,
+    "aggregateThroughput": 42.96788481164446,
     "jainFairness": 0.9969240260802763,
     "processResults": [
       {
@@ -13783,7 +13783,7 @@
     "totalCompleted": 13230,
     "totalErrors": 0,
     "wallClockS": 337.765,
-    "aggregateThroughput": 39.16924488919811,
+    "aggregateThroughput": 43.62917203050703,
     "jainFairness": 0.9973457870371409,
     "processResults": [
       {
@@ -14909,7 +14909,7 @@
     "totalCompleted": 41125,
     "totalErrors": 0,
     "wallClockS": 326.349,
-    "aggregateThroughput": 126.01540069067164,
+    "aggregateThroughput": 133.05202034552596,
     "jainFairness": 0.9995635144093313,
     "processResults": [
       {
@@ -15462,7 +15462,7 @@
     "totalCompleted": 44748,
     "totalErrors": 18781,
     "wallClockS": 319.839,
-    "aggregateThroughput": 139.90789115773873,
+    "aggregateThroughput": 149.13451520354923,
     "jainFairness": 0.9379153871299437,
     "processResults": [
       {
@@ -16791,7 +16791,7 @@
     "totalCompleted": 49882,
     "totalErrors": 3133,
     "wallClockS": 323.511,
-    "aggregateThroughput": 154.18950205711707,
+    "aggregateThroughput": 166.24468258453706,
     "jainFairness": 0.981017808692288,
     "processResults": [
       {
@@ -19131,7 +19131,7 @@
     "totalCompleted": 2998,
     "totalErrors": 0,
     "wallClockS": 368.327,
-    "aggregateThroughput": 8.139506471151993,
+    "aggregateThroughput": 9.955004644468065,
     "jainFairness": 0.9999781788084892,
     "processResults": [
       {
@@ -19924,7 +19924,7 @@
     "totalCompleted": 6400,
     "totalErrors": 0,
     "wallClockS": 363.176,
-    "aggregateThroughput": 17.622309844262837,
+    "aggregateThroughput": 20.53622879692966,
     "jainFairness": 0.9997815464392538,
     "processResults": [
       {
@@ -21596,7 +21596,7 @@
     "totalCompleted": 18870,
     "totalErrors": 0,
     "wallClockS": 363.43,
-    "aggregateThroughput": 51.92196571554357,
+    "aggregateThroughput": 61.340129260618326,
     "jainFairness": 0.985636505821813,
     "processResults": [
       {
@@ -22029,7 +22029,7 @@
     "totalCompleted": 37038,
     "totalErrors": 19107,
     "wallClockS": 423.339,
-    "aggregateThroughput": 87.4901674544514,
+    "aggregateThroughput": 118.21749798948294,
     "jainFairness": 0.983586050839702,
     "processResults": [
       {
@@ -22474,7 +22474,7 @@
     "totalCompleted": 39850,
     "totalErrors": 0,
     "wallClockS": 334.574,
-    "aggregateThroughput": 119.10668491873247,
+    "aggregateThroughput": 132.80603013293344,
     "jainFairness": 0.997963975386596,
     "processResults": [
       {
@@ -23827,7 +23827,7 @@
     "totalCompleted": 49828,
     "totalErrors": 1419,
     "wallClockS": 317.469,
-    "aggregateThroughput": 156.95390731063506,
+    "aggregateThroughput": 166.06546767351392,
     "jainFairness": 0.9577704627067342,
     "processResults": [
       {
@@ -25278,7 +25278,7 @@
     "totalCompleted": 50122,
     "totalErrors": 0,
     "wallClockS": 337.253,
-    "aggregateThroughput": 148.61839627816505,
+    "aggregateThroughput": 167.0442728533313,
     "jainFairness": 0.9962476696910205,
     "processResults": [
       {
@@ -26631,7 +26631,7 @@
     "totalCompleted": 49684,
     "totalErrors": 4365,
     "wallClockS": 315.306,
-    "aggregateThroughput": 157.57391232643846,
+    "aggregateThroughput": 165.58482357811903,
     "jainFairness": 0.9459149859101124,
     "processResults": [
       {
@@ -28085,7 +28085,7 @@
     "totalCompleted": 14992,
     "totalErrors": 0,
     "wallClockS": 325.903,
-    "aggregateThroughput": 46.001417599715246,
+    "aggregateThroughput": 49.74847853856598,
     "jainFairness": 0.999992376392386,
     "processResults": [
       {
@@ -28368,7 +28368,7 @@
     "totalCompleted": 50573,
     "totalErrors": 3,
     "wallClockS": 306.758,
-    "aggregateThroughput": 164.8628560624336,
+    "aggregateThroughput": 174.19420042206545,
     "jainFairness": 0.9998264963880146,
     "processResults": [
       {
@@ -28653,7 +28653,7 @@
     "totalCompleted": 41946,
     "totalErrors": 0,
     "wallClockS": 343.15,
-    "aggregateThroughput": 122.23808829957746,
+    "aggregateThroughput": 139.21942206836158,
     "jainFairness": 0.9979005618625678,
     "processResults": [
       {
@@ -28936,7 +28936,7 @@
     "totalCompleted": 50550,
     "totalErrors": 22,
     "wallClockS": 303.543,
-    "aggregateThroughput": 166.53324240717131,
+    "aggregateThroughput": 184.1262652791962,
     "jainFairness": 0.999511210169615,
     "processResults": [
       {
@@ -29227,7 +29227,7 @@
     "totalCompleted": 7786,
     "totalErrors": 0,
     "wallClockS": 318.526,
-    "aggregateThroughput": 24.443844458537136,
+    "aggregateThroughput": 25.674691717811534,
     "jainFairness": 0.9999996041029455,
     "processResults": [
       {
@@ -30126,7 +30126,7 @@
     "totalCompleted": 40417,
     "totalErrors": 1193,
     "wallClockS": 316.64,
-    "aggregateThroughput": 127.64338049519961,
+    "aggregateThroughput": 134.70430293848332,
     "jainFairness": 0.9994900586976982,
     "processResults": [
       {
@@ -30837,7 +30837,7 @@
     "totalCompleted": 50287,
     "totalErrors": 0,
     "wallClockS": 187.836,
-    "aggregateThroughput": 267.7175834238378,
+    "aggregateThroughput": 343.2125996643132,
     "jainFairness": 0.9997704778573053,
     "processResults": [
       {
@@ -31350,7 +31350,7 @@
     "totalCompleted": 50370,
     "totalErrors": 0,
     "wallClockS": 196.946,
-    "aggregateThroughput": 255.75538472474688,
+    "aggregateThroughput": 270.6035292837198,
     "jainFairness": 0.998860819853342,
     "processResults": [
       {
@@ -31863,7 +31863,7 @@
     "totalCompleted": 50280,
     "totalErrors": 22,
     "wallClockS": 152.551,
-    "aggregateThroughput": 329.59469292236696,
+    "aggregateThroughput": 358.36874521308795,
     "jainFairness": 0.9998410333083565,
     "processResults": [
       {
@@ -32386,7 +32386,7 @@
     "totalCompleted": 14988,
     "totalErrors": 0,
     "wallClockS": 363.718,
-    "aggregateThroughput": 41.20774886038084,
+    "aggregateThroughput": 49.69622294923174,
     "jainFairness": 0.9999859674110031,
     "processResults": [
       {
@@ -33040,7 +33040,7 @@
     "totalCompleted": 50514,
     "totalErrors": 0,
     "wallClockS": 449.896,
-    "aggregateThroughput": 112.27928232302577,
+    "aggregateThroughput": 194.74549099895992,
     "jainFairness": 0.9983201483622459,
     "processResults": [
       {
@@ -33353,7 +33353,7 @@
     "totalCompleted": 50354,
     "totalErrors": 1538,
     "wallClockS": 203.762,
-    "aggregateThroughput": 247.12164191556818,
+    "aggregateThroughput": 263.92394964894646,
     "jainFairness": 0.999413900535716,
     "processResults": [
       {
@@ -33849,7 +33849,7 @@
     "totalCompleted": 8540,
     "totalErrors": 13970,
     "wallClockS": 316.486,
-    "aggregateThroughput": 26.98381602977699,
+    "aggregateThroughput": 28.369840200164813,
     "jainFairness": 0.9486136965915726,
     "processResults": [
       {
@@ -34395,7 +34395,7 @@
     "totalCompleted": 46643,
     "totalErrors": 10989,
     "wallClockS": 318.864,
-    "aggregateThroughput": 146.27866425811632,
+    "aggregateThroughput": 155.44651710013926,
     "jainFairness": 0.999023805552361,
     "processResults": [
       {
@@ -34600,7 +34600,7 @@
     "totalCompleted": 37465,
     "totalErrors": 0,
     "wallClockS": 356.416,
-    "aggregateThroughput": 105.11593194469384,
+    "aggregateThroughput": 123.8520232854718,
     "jainFairness": 0.9999639074051043,
     "processResults": [
       {
@@ -35303,7 +35303,7 @@
     "totalCompleted": 50115,
     "totalErrors": 1157,
     "wallClockS": 92.267,
-    "aggregateThroughput": 543.1519394799875,
+    "aggregateThroughput": 665.794857250935,
     "jainFairness": 0.9994597783321825,
     "processResults": [
       {
@@ -36056,7 +36056,7 @@
     "totalCompleted": 50220,
     "totalErrors": 0,
     "wallClockS": 123.065,
-    "aggregateThroughput": 408.0770324625198,
+    "aggregateThroughput": 464.1432981815391,
     "jainFairness": 0.9978134276160329,
     "processResults": [
       {
@@ -36759,7 +36759,7 @@
     "totalCompleted": 50678,
     "totalErrors": 1416,
     "wallClockS": 99.063,
-    "aggregateThroughput": 511.573443162432,
+    "aggregateThroughput": 566.4494864908996,
     "jainFairness": 0.9988222369656793,
     "processResults": [
       {
@@ -37515,7 +37515,7 @@
     "totalCompleted": 50407,
     "totalErrors": 0,
     "wallClockS": 219.61,
-    "aggregateThroughput": 229.52962069122535,
+    "aggregateThroughput": 243.65391959531962,
     "jainFairness": 0.9999200366291019,
     "processResults": [
       {
@@ -38718,7 +38718,7 @@
     "totalCompleted": 50130,
     "totalErrors": 0,
     "wallClockS": 74.579,
-    "aggregateThroughput": 672.1731318467665,
+    "aggregateThroughput": 793.1177641636174,
     "jainFairness": 0.9990405535579515,
     "processResults": [
       {
@@ -39921,7 +39921,7 @@
     "totalCompleted": 50160,
     "totalErrors": 0,
     "wallClockS": 90.907,
-    "aggregateThroughput": 551.7726907718878,
+    "aggregateThroughput": 613.8600225259329,
     "jainFairness": 0.9985902935867815,
     "processResults": [
       {
@@ -41124,7 +41124,7 @@
     "totalCompleted": 50090,
     "totalErrors": 0,
     "wallClockS": 72.457,
-    "aggregateThroughput": 691.3065680334544,
+    "aggregateThroughput": 796.3814236779483,
     "jainFairness": 0.9994307756638114,
     "processResults": [
       {
@@ -42327,7 +42327,7 @@
     "totalCompleted": 50210,
     "totalErrors": 0,
     "wallClockS": 120.461,
-    "aggregateThroughput": 416.81540083512505,
+    "aggregateThroughput": 467.80854141306725,
     "jainFairness": 0.9992868562770676,
     "processResults": [
       {
@@ -44680,7 +44680,7 @@
     "totalCompleted": 50075,
     "totalErrors": 0,
     "wallClockS": 77.523,
-    "aggregateThroughput": 645.9373347264683,
+    "aggregateThroughput": 724.2874782406166,
     "jainFairness": 0.9868915390806958,
     "processResults": [
       {
@@ -47033,7 +47033,7 @@
     "totalCompleted": 50130,
     "totalErrors": 0,
     "wallClockS": 89.419,
-    "aggregateThroughput": 560.6191077958823,
+    "aggregateThroughput": 676.3800297837324,
     "jainFairness": 0.9865846188573878,
     "processResults": [
       {
@@ -49386,7 +49386,7 @@
     "totalCompleted": 50088,
     "totalErrors": 0,
     "wallClockS": 84.667,
-    "aggregateThroughput": 591.5882220936138,
+    "aggregateThroughput": 667.6542282020937,
     "jainFairness": 0.9831601434481637,
     "processResults": [
       {
@@ -51739,7 +51739,7 @@
     "totalCompleted": 14905,
     "totalErrors": 0,
     "wallClockS": 389.883,
-    "aggregateThroughput": 38.22941754321168,
+    "aggregateThroughput": 49.06071634905004,
     "jainFairness": 0.9998951272323027,
     "processResults": [
       {
@@ -52142,7 +52142,7 @@
     "totalCompleted": 50115,
     "totalErrors": 1328,
     "wallClockS": 103.865,
-    "aggregateThroughput": 482.50132383382277,
+    "aggregateThroughput": 568.5409236039466,
     "jainFairness": 0.9913439000229038,
     "processResults": [
       {
@@ -52567,7 +52567,7 @@
     "totalCompleted": 50380,
     "totalErrors": 0,
     "wallClockS": 345.203,
-    "aggregateThroughput": 145.94311173425493,
+    "aggregateThroughput": 263.4528971932361,
     "jainFairness": 0.997652379577321,
     "processResults": [
       {
@@ -52970,7 +52970,7 @@
     "totalCompleted": 50205,
     "totalErrors": 11786,
     "wallClockS": 145.062,
-    "aggregateThroughput": 346.09339454853784,
+    "aggregateThroughput": 374.9756768307716,
     "jainFairness": 0.9991283654668832,
     "processResults": [
       {
@@ -54095,7 +54095,7 @@
     "totalCompleted": 331,
     "totalErrors": 9440,
     "wallClockS": 336.67,
-    "aggregateThroughput": 0.9831585825882911,
+    "aggregateThroughput": 1.098847962263945,
     "jainFairness": 0.49948028265329386,
     "processResults": [
       {
@@ -54588,7 +54588,7 @@
     "totalCompleted": 39616,
     "totalErrors": 26138,
     "wallClockS": 316.682,
-    "aggregateThroughput": 125.0971005614465,
+    "aggregateThroughput": 131.98182149804828,
     "jainFairness": 0.8767683817912341,
     "processResults": [
       {
@@ -56077,7 +56077,7 @@
     "totalCompleted": 50417,
     "totalErrors": 0,
     "wallClockS": 222.039,
-    "aggregateThroughput": 227.06371403221956,
+    "aggregateThroughput": 242.0352197542681,
     "jainFairness": 0.9997008061611906,
     "processResults": [
       {

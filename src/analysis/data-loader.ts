@@ -224,12 +224,35 @@ function patchAggregateThroughput(scenario: any): boolean {
 }
 
 /**
+ * Discard legacy Java memory data that measured JVM heap instead of process RSS.
+ *
+ * Before the /proc/self/statm fix, the Java worker reported JVM heap usage under
+ * the keys `peakHeapMb` and `avgHeapMb`. These values are not comparable to RSS
+ * (typically ~28 MB heap vs ~500 MB RSS), so we remove the entire memoryUsage
+ * object rather than rename the fields. The UI will show "—" for these processes.
+ * Mutates processResults in place.
+ */
+function stripLegacyJavaHeapMemory(scenario: any): void {
+  const processResults = scenario?.processResults;
+  if (!Array.isArray(processResults)) return;
+
+  for (const p of processResults) {
+    const mem = p.memoryUsage;
+    if (!mem) continue;
+    if (typeof mem.peakHeapMb === 'number' || typeof mem.avgHeapMb === 'number') {
+      delete p.memoryUsage;
+    }
+  }
+}
+
+/**
  * Patch all scenarios in an array. Returns the number patched.
  */
 function patchAllScenarios(scenarios: any[]): number {
   let patched = 0;
   for (const s of scenarios) {
     if (patchAggregateThroughput(s)) patched++;
+    stripLegacyJavaHeapMemory(s);
   }
   return patched;
 }
