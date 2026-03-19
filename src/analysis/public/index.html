@@ -14,7 +14,14 @@
     <select id="run-select">
       <option value="">Loading runs...</option>
     </select>
+    <span class="ab-controls hidden" id="ab-controls">
+      <span class="vs-label">vs</span>
+      <select id="run-select-b">
+        <option value="">Select Run B...</option>
+      </select>
+    </span>
     <button id="refresh-btn" title="Force re-fetch from GCS">Refresh</button>
+    <button id="share-btn" title="Copy shareable URL to clipboard">Share &#x1F517;</button>
     <span id="status" class="status"></span>
   </div>
 
@@ -22,6 +29,7 @@
   <div class="tab-bar" id="view-tabs">
     <button class="active" data-tab="explorer">Explorer</button>
     <button data-tab="comparison">Comparison</button>
+    <button data-tab="ab">A/B Compare</button>
   </div>
 
   <!-- Saved Views Bar -->
@@ -70,6 +78,45 @@
             <option value="desc">Descending</option>
             <option value="asc">Ascending</option>
           </select>
+        </div>
+      </div>
+
+      <!-- A/B Compare Container (hidden unless A/B tab active) -->
+      <div class="ab-container hidden" id="ab-container">
+        <div class="ab-panel" id="ab-panel-a">
+          <div class="ab-panel-header" id="ab-header-a">Run A</div>
+          <div class="ab-table-wrap">
+            <table>
+              <thead><tr id="ab-head-a"></tr></thead>
+              <tbody id="ab-body-a"></tbody>
+            </table>
+          </div>
+          <div class="ab-output hidden" id="ab-output-a">
+            <div class="output-tabs" id="ab-output-tabs-a">
+              <button class="active" data-format="html">HTML</button>
+              <button data-format="markdown">Markdown</button>
+              <button data-format="slack">Slack</button>
+            </div>
+            <div class="output-content" id="ab-output-content-a"></div>
+          </div>
+        </div>
+        <div class="ab-divider"></div>
+        <div class="ab-panel" id="ab-panel-b">
+          <div class="ab-panel-header" id="ab-header-b">Run B</div>
+          <div class="ab-table-wrap">
+            <table>
+              <thead><tr id="ab-head-b"></tr></thead>
+              <tbody id="ab-body-b"></tbody>
+            </table>
+          </div>
+          <div class="ab-output hidden" id="ab-output-b">
+            <div class="output-tabs" id="ab-output-tabs-b">
+              <button class="active" data-format="html">HTML</button>
+              <button data-format="markdown">Markdown</button>
+              <button data-format="slack">Slack</button>
+            </div>
+            <div class="output-content" id="ab-output-content-b"></div>
+          </div>
         </div>
       </div>
 

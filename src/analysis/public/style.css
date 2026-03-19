@@ -712,3 +712,78 @@ tr:hover .copy-id-btn { opacity: 0.8; }
 }
 
 .hidden { display: none !important; }
+
+/* ─── A/B Controls in Top Bar ───────────────────────────── */
+.ab-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.ab-controls .vs-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+.ab-controls select {
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
+  min-width: 260px;
+}
+
+#share-btn {
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+#share-btn:hover { border-color: var(--accent); color: var(--accent); }
+#share-btn.copied { border-color: var(--green); color: var(--green); }
+
+/* ─── A/B Compare Layout ───────────────────────────────── */
+.ab-container {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+.ab-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+.ab-panel-header {
+  padding: 8px 12px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+.ab-table-wrap {
+  flex: 1;
+  overflow: auto;
+}
+.ab-divider {
+  width: 3px;
+  background: var(--accent);
+  opacity: 0.3;
+  flex-shrink: 0;
+}
+.ab-output {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+}

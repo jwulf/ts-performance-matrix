@@ -53,9 +53,12 @@ const DEFAULT_VISIBLE_METRICS = new Set([
 
 // ─── State ───────────────────────────────────────────────
 
-let allData = [];          // Raw ScenarioResult[] for current run
+let allData = [];          // Raw ScenarioResult[] for current run (A side)
 let enrichedData = [];     // With computed fields
 let filteredData = [];     // After dimension filters
+let allDataB = [];         // Raw ScenarioResult[] for B side
+let enrichedDataB = [];
+let filteredDataB = [];
 let currentTab = 'explorer';
 let currentOutputFormat = 'html';
 let sortColumn = 'aggregateThroughput';
@@ -70,6 +73,86 @@ const visibleMetrics = new Set(DEFAULT_VISIBLE_METRICS);
 
 const LS_VIEW_STATE = 'matrix-analysis-view-state';
 const LS_SAVED_VIEWS = 'matrix-analysis-saved-views';
+
+// ─── URL Hash State ──────────────────────────────────────
+
+/** Short keys for dimension filters in URL hash. */
+const DIM_URL_KEY = {
+  cluster: 'cluster', sdkLanguage: 'lang', sdkMode: 'mode', handlerType: 'handler',
+  totalWorkers: 'workers', workersPerProcess: 'wpp', processes: 'procs',
+};
+const URL_KEY_DIM = Object.fromEntries(Object.entries(DIM_URL_KEY).map(([k, v]) => [v, k]));
+
+/** Serialize current view state to a URL hash string. */
+function stateToHash(state) {
+  const p = new URLSearchParams();
+  if (state.runId) p.set('a', state.runId);
+  if (state.runIdB) p.set('b', state.runIdB);
+  if (state.currentTab && state.currentTab !== 'explorer') p.set('tab', state.currentTab);
+  if (state.sortColumn && state.sortColumn !== 'aggregateThroughput') p.set('sort', state.sortColumn);
+  if (state.sortAsc) p.set('order', 'asc');
+  if (state.groupBy) p.set('group', state.groupBy);
+  // Filters: only encode dimensions where not all values are selected
+  if (state.filters) {
+    for (const dim of DIMENSIONS) {
+      const vals = state.filters[dim.key];
+      if (!vals || vals.length === 0) continue;
+      // If this dimension has fewer selected than available, encode it
+      const allVals = enrichedData.length > 0
+        ? [...new Set(enrichedData.map(d => d[dim.key]))]
+        : [];
+      if (allVals.length > 0 && vals.length < allVals.length) {
+        p.set(DIM_URL_KEY[dim.key], vals.map(String).join(','));
+      }
+    }
+  }
+  // Visible metrics: only encode if different from defaults
+  if (state.visibleMetrics) {
+    const current = new Set(state.visibleMetrics);
+    const isDefault = current.size === DEFAULT_VISIBLE_METRICS.size &&
+      [...DEFAULT_VISIBLE_METRICS].every(k => current.has(k));
+    if (!isDefault) {
+      p.set('cols', state.visibleMetrics.join(','));
+    }
+  }
+  return p.toString();
+}
+
+/** Parse a URL hash string into a partial state object. */
+function hashToState(hash) {
+  const h = hash.startsWith('#') ? hash.slice(1) : hash;
+  if (!h) return null;
+  const p = new URLSearchParams(h);
+  const state = {};
+  if (p.has('a')) state.runId = p.get('a');
+  if (p.has('b')) state.runIdB = p.get('b');
+  if (p.has('tab')) state.currentTab = p.get('tab');
+  if (p.has('sort')) state.sortColumn = p.get('sort');
+  if (p.has('order')) state.sortAsc = p.get('order') === 'asc';
+  if (p.has('group')) state.groupBy = p.get('group');
+  // Filters
+  const filters = {};
+  for (const [urlKey, dimKey] of Object.entries(URL_KEY_DIM)) {
+    if (p.has(urlKey)) {
+      const raw = p.get(urlKey).split(',').filter(Boolean);
+      // Attempt numeric conversion for numeric dimensions
+      filters[dimKey] = raw.map(v => isNaN(v) ? v : Number(v));
+    }
+  }
+  if (Object.keys(filters).length > 0) state.filters = filters;
+  // Visible metrics
+  if (p.has('cols')) {
+    state.visibleMetrics = p.get('cols').split(',').filter(Boolean);
+  }
+  return state;
+}
+
+/** Update the URL hash without triggering navigation. */
+function syncUrlHash() {
+  const hash = stateToHash(captureViewState());
+  const newUrl = hash ? `#${hash}` : window.location.pathname + window.location.search;
+  history.replaceState(null, '', newUrl);
+}
 
 // ─── DOM Refs ────────────────────────────────────────────
 
@@ -92,6 +175,12 @@ const sortOrderSelect = document.getElementById('sort-order');
 const savedViewsList = document.getElementById('saved-views-list');
 const saveViewBtn = document.getElementById('save-view-btn');
 
+// A/B compare DOM refs
+const abControls = document.getElementById('ab-controls');
+const runSelectB = document.getElementById('run-select-b');
+const abContainer = document.getElementById('ab-container');
+const shareBtn = document.getElementById('share-btn');
+
 // ─── View State Persistence ──────────────────────────────
 
 /** Capture the current view state as a serializable object. */
@@ -104,6 +193,7 @@ function captureViewState() {
   }
   return {
     runId: runSelect.value || null,
+    runIdB: runSelectB.value || null,
     currentTab,
     currentOutputFormat,
     sortColumn,
@@ -121,7 +211,10 @@ function applyViewState(state) {
     currentTab = state.currentTab;
     document.querySelectorAll('#view-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === currentTab));
     document.getElementById('sidebar').classList.toggle('hidden', currentTab === 'comparison');
-    comparisonControls.classList.toggle('hidden', currentTab === 'explorer');
+    comparisonControls.classList.toggle('hidden', currentTab === 'explorer' || currentTab === 'ab');
+    abControls.classList.toggle('hidden', currentTab !== 'ab');
+    abContainer.classList.toggle('hidden', currentTab !== 'ab');
+    tableContainer.classList.toggle('hidden', currentTab === 'ab');
   }
   if (state.currentOutputFormat) currentOutputFormat = state.currentOutputFormat;
   if (state.sortColumn) sortColumn = state.sortColumn;
@@ -159,6 +252,7 @@ function persistViewState() {
   clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {
     try { localStorage.setItem(LS_VIEW_STATE, JSON.stringify(captureViewState())); } catch {}
+    syncUrlHash();
   }, 300);
 }
 
@@ -246,8 +340,9 @@ function deleteSavedView(name) {
 // ─── Init ────────────────────────────────────────────────
 
 async function init() {
-  // Restore persisted view state
-  const savedState = loadPersistedViewState();
+  // Restore state: URL hash takes priority, then localStorage
+  const urlState = hashToState(window.location.hash);
+  const savedState = urlState || loadPersistedViewState();
   if (savedState) applyViewState(savedState);
 
   // Hide refresh button when GCS is not available (GitHub Pages mode)
@@ -260,14 +355,23 @@ async function init() {
   try {
     const runs = await adapter.listRuns();
     populateRunSelect(runs);
+    populateRunSelectB(runs);
     setStatus(`${runs.length} runs found`);
 
-    // Restore previously selected run
+    // Restore previously selected run A
     if (savedState && savedState.runId) {
       const opt = [...runSelect.options].find((o) => o.value === savedState.runId);
       if (opt) {
         runSelect.value = savedState.runId;
-        loadSelectedRun(false, savedState);
+        await loadSelectedRun(false, savedState);
+      }
+    }
+    // Restore run B if in AB mode
+    if (savedState && savedState.runIdB && savedState.currentTab === 'ab') {
+      const optB = [...runSelectB.options].find((o) => o.value === savedState.runIdB);
+      if (optB) {
+        runSelectB.value = savedState.runIdB;
+        await loadRunB(savedState.runIdB, savedState);
       }
     }
   } catch (e) {
@@ -277,6 +381,21 @@ async function init() {
   // Event listeners
   runSelect.addEventListener('change', () => loadSelectedRun(false));
   refreshBtn.addEventListener('click', () => loadSelectedRun(true));
+  runSelectB.addEventListener('change', () => {
+    const runIdB = runSelectB.value;
+    if (runIdB) loadRunB(runIdB);
+    else { allDataB = []; enrichedDataB = []; filteredDataB = []; renderTable(); persistViewState(); }
+  });
+
+  // Share button
+  shareBtn.addEventListener('click', () => {
+    syncUrlHash();
+    navigator.clipboard.writeText(window.location.href).then(() => {
+      shareBtn.classList.add('copied');
+      shareBtn.textContent = 'Copied!';
+      setTimeout(() => { shareBtn.classList.remove('copied'); shareBtn.textContent = 'Share \u{1F517}'; }, 2000);
+    });
+  });
 
   // View tabs
   document.getElementById('view-tabs').addEventListener('click', (e) => {
@@ -284,7 +403,10 @@ async function init() {
     currentTab = e.target.dataset.tab;
     document.querySelectorAll('#view-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === currentTab));
     document.getElementById('sidebar').classList.toggle('hidden', currentTab === 'comparison');
-    comparisonControls.classList.toggle('hidden', currentTab === 'explorer');
+    comparisonControls.classList.toggle('hidden', currentTab === 'explorer' || currentTab === 'ab');
+    abControls.classList.toggle('hidden', currentTab !== 'ab');
+    abContainer.classList.toggle('hidden', currentTab !== 'ab');
+    tableContainer.classList.toggle('hidden', currentTab === 'ab');
     renderTable();
     persistViewState();
   });
@@ -297,6 +419,15 @@ async function init() {
     renderOutput();
     persistViewState();
   });
+
+  // A/B output format tabs
+  for (const side of ['a', 'b']) {
+    document.getElementById(`ab-output-tabs-${side}`).addEventListener('click', (e) => {
+      if (e.target.tagName !== 'BUTTON') return;
+      document.querySelectorAll(`#ab-output-tabs-${side} button`).forEach((b) => b.classList.toggle('active', b.dataset.format === e.target.dataset.format));
+      renderABOutput();
+    });
+  }
 
   // Comparison controls
   groupBySelect.addEventListener('change', () => { renderTable(); persistViewState(); });
@@ -322,6 +453,19 @@ function populateRunSelect(runs) {
     const laneInfo = run.lanes > 0 ? `, ${run.lanes} lanes` : '';
     opt.textContent = `${run.runId} (${date}${laneInfo})${sourceTag}`;
     runSelect.appendChild(opt);
+  }
+}
+
+function populateRunSelectB(runs) {
+  runSelectB.innerHTML = '<option value="">Select Run B...</option>';
+  for (const run of runs) {
+    const date = new Date(run.timestamp).toLocaleString();
+    const opt = document.createElement('option');
+    opt.value = run.runId;
+    const sourceTag = run.source === 'local' ? ' [local]' : run.source === 'cache' ? ' [cached]' : '';
+    const laneInfo = run.lanes > 0 ? `, ${run.lanes} lanes` : '';
+    opt.textContent = `${run.runId} (${date}${laneInfo})${sourceTag}`;
+    runSelectB.appendChild(opt);
   }
 }
 
@@ -449,6 +593,28 @@ async function loadSelectedRun(refresh, stateToRestore) {
 
 function setStatus(text) {
   statusEl.textContent = text;
+}
+
+// ─── Load Run B (A/B Compare) ────────────────────────────
+
+async function loadRunB(runIdB, stateToRestore) {
+  if (!runIdB) return;
+  setStatus(`Loading Run B: ${runIdB}...`);
+  try {
+    const data = await adapter.loadRun(runIdB, false, () => {});
+    allDataB = data;
+    enrichedDataB = allDataB.map(enrichScenario);
+    // Rebuild filters to include values from both datasets
+    if (enrichedData.length > 0) {
+      buildFilters();
+      if (stateToRestore) restoreFiltersFromState(stateToRestore);
+    }
+    applyFilters();
+    setStatus(`A: ${enrichedData.length} scenarios, B: ${enrichedDataB.length} scenarios`);
+    persistViewState();
+  } catch (e) {
+    setStatus('Error loading Run B: ' + e.message);
+  }
 }
 
 // ─── Run Summary ─────────────────────────────────────────
@@ -622,8 +788,13 @@ function buildErrorCategoryMetrics() {
 function buildFilters() {
   filterGroupsEl.innerHTML = '';
 
+  // In AB mode, merge dimension values from both datasets
+  const combinedData = currentTab === 'ab' && enrichedDataB.length > 0
+    ? [...enrichedData, ...enrichedDataB]
+    : enrichedData;
+
   for (const dim of DIMENSIONS) {
-    const values = [...new Set(enrichedData.map((d) => d[dim.key]))].sort((a, b) => {
+    const values = [...new Set(combinedData.map((d) => d[dim.key]))].sort((a, b) => {
       if (typeof a === 'number') return a - b;
       return String(a).localeCompare(String(b));
     });
@@ -687,13 +858,15 @@ function buildFilters() {
 }
 
 function applyFilters() {
-  filteredData = enrichedData.filter((d) => {
+  const filterFn = (d) => {
     for (const dim of DIMENSIONS) {
       if (!filters[dim.key] || filters[dim.key].size === 0) return false;
       if (!filters[dim.key].has(d[dim.key])) return false;
     }
     return true;
-  });
+  };
+  filteredData = enrichedData.filter(filterFn);
+  filteredDataB = enrichedDataB.filter(filterFn);
   renderTable();
 }
 
@@ -755,6 +928,12 @@ function populateComparisonControls() {
 // ─── Table Rendering ─────────────────────────────────────
 
 function renderTable() {
+  // A/B mode: render split panels instead of the single table
+  if (currentTab === 'ab') {
+    renderABPanels();
+    return;
+  }
+
   if (filteredData.length === 0) {
     loadingMsg.textContent = enrichedData.length > 0 ? 'No scenarios match current filters' : 'No data loaded';
     loadingMsg.classList.remove('hidden');
@@ -875,6 +1054,161 @@ function renderTable() {
   }
 
   renderOutput();
+}
+
+// ─── A/B Compare Rendering ───────────────────────────────
+
+function renderABPanels() {
+  const headerA = document.getElementById('ab-header-a');
+  const headerB = document.getElementById('ab-header-b');
+  const headA = document.getElementById('ab-head-a');
+  const bodyA = document.getElementById('ab-body-a');
+  const headB = document.getElementById('ab-head-b');
+  const bodyB = document.getElementById('ab-body-b');
+
+  headerA.textContent = runSelect.value || 'Run A (not selected)';
+  headerB.textContent = runSelectB.value || 'Run B (not selected)';
+
+  const dimCols = DIMENSIONS;
+  const metricCols = getMetrics().filter((m) => visibleMetrics.has(m.key));
+
+  renderABPanel(headA, bodyA, filteredData, dimCols, metricCols, runSelect.value);
+  renderABPanel(headB, bodyB, filteredDataB, dimCols, metricCols, runSelectB.value);
+
+  // Hide the main output section in AB mode
+  outputSection.classList.add('hidden');
+
+  renderABOutput();
+}
+
+function renderABPanel(headEl, bodyEl, data, dimCols, metricCols, runId) {
+  headEl.innerHTML = '';
+  bodyEl.innerHTML = '';
+
+  if (data.length === 0) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = dimCols.length + metricCols.length;
+    td.style.cssText = 'padding: 40px; text-align: center; color: var(--text-muted);';
+    td.textContent = runId ? 'No scenarios match current filters' : 'Select a run';
+    tr.appendChild(td);
+    bodyEl.appendChild(tr);
+    return;
+  }
+
+  // Sort
+  const sorted = [...data].sort((a, b) => {
+    const va = getMetricValue(a, sortColumn);
+    const vb = getMetricValue(b, sortColumn);
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    const cmp = typeof va === 'string' ? va.localeCompare(vb) : va - vb;
+    return sortAsc ? cmp : -cmp;
+  });
+
+  // Header
+  for (const dim of dimCols) {
+    const th = document.createElement('th');
+    th.textContent = dim.label;
+    th.dataset.col = dim.key;
+    th.addEventListener('click', () => toggleSort(dim.key));
+    if (sortColumn === dim.key) th.className = sortAsc ? 'sorted-asc' : 'sorted-desc';
+    headEl.appendChild(th);
+  }
+  for (const m of metricCols) {
+    const th = document.createElement('th');
+    th.textContent = m.label;
+    th.className = 'num';
+    th.dataset.col = m.key;
+    th.addEventListener('click', () => toggleSort(m.key));
+    if (sortColumn === m.key) th.className = 'num ' + (sortAsc ? 'sorted-asc' : 'sorted-desc');
+    headEl.appendChild(th);
+  }
+
+  // Rows
+  for (const row of sorted) {
+    const tr = document.createElement('tr');
+    tr.style.cursor = 'pointer';
+    tr.addEventListener('click', () => openScenarioPopover(row));
+
+    for (const dim of dimCols) {
+      const td = document.createElement('td');
+      td.textContent = String(row[dim.key]);
+      tr.appendChild(td);
+    }
+    for (const m of metricCols) {
+      const td = document.createElement('td');
+      td.className = 'num';
+      const val = getMetricValue(row, m.key);
+      td.textContent = m.format(val);
+      if (m.key === 'status') td.className = `status-${val}`;
+      tr.appendChild(td);
+    }
+
+    bodyEl.appendChild(tr);
+  }
+}
+
+// ─── A/B Output Rendering ────────────────────────────────
+
+function runIdToDate(runId) {
+  if (!runId) return '—';
+  const ts = parseInt(runId.replace('run-', ''), 10);
+  return isNaN(ts) ? '—' : new Date(ts).toLocaleString();
+}
+
+function renderABOutput() {
+  const outputA = document.getElementById('ab-output-a');
+  const outputB = document.getElementById('ab-output-b');
+  const contentA = document.getElementById('ab-output-content-a');
+  const contentB = document.getElementById('ab-output-content-b');
+
+  const hasA = filteredData.length > 0;
+  const hasB = filteredDataB.length > 0;
+
+  outputA.classList.toggle('hidden', !hasA);
+  outputB.classList.toggle('hidden', !hasB);
+
+  if (hasA) renderABOutputPanel(contentA, filteredData, runSelect.value, 'a');
+  if (hasB) renderABOutputPanel(contentB, filteredDataB, runSelectB.value, 'b');
+}
+
+function renderABOutputPanel(contentEl, data, runId, side) {
+  const dimCols = DIMENSIONS;
+  const metricCols = getMetrics().filter((m) => visibleMetrics.has(m.key));
+
+  const sorted = [...data].sort((a, b) => {
+    const va = getMetricValue(a, sortColumn);
+    const vb = getMetricValue(b, sortColumn);
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    const cmp = typeof va === 'string' ? va.localeCompare(vb) : va - vb;
+    return sortAsc ? cmp : -cmp;
+  });
+
+  const headers = [...dimCols.map((d) => d.label), ...metricCols.map((m) => m.label)];
+  const rows = sorted.map((row) => [
+    ...dimCols.map((d) => String(row[d.key])),
+    ...metricCols.map((m) => m.format(getMetricValue(row, m.key))),
+  ]);
+
+  const runHeader = `Run: ${runId}  |  ${runIdToDate(runId)}`;
+
+  // Read the active format from this panel's tabs
+  const activeBtn = document.querySelector(`#ab-output-tabs-${side} button.active`);
+  const format = activeBtn ? activeBtn.dataset.format : 'html';
+
+  if (format === 'html') {
+    contentEl.innerHTML = '<div style="padding: 12px; color: var(--text-muted); font-size: 12px;">The HTML table is rendered above. Use Markdown or Slack tabs to copy.</div>';
+  } else if (format === 'markdown') {
+    const md = `**${runHeader}**\n\n` + toMarkdown(headers, rows);
+    contentEl.innerHTML = `<textarea readonly>${escapeHtml(md)}</textarea>`;
+  } else if (format === 'slack') {
+    const slack = `*${runHeader}*\n\n` + toSlack(headers, rows);
+    contentEl.innerHTML = `<textarea readonly>${escapeHtml(slack)}</textarea>`;
+  }
 }
 
 function getMetricValue(row, key) {
