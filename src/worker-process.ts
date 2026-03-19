@@ -140,108 +140,6 @@ function cpuWork(durationMs: number) {
   }
 }
 
-// ─── CPU work on worker_threads pool ─────────────────
-
-// Worker thread entry point: when this file is loaded as a worker thread,
-// it listens for { durationMs } messages, runs cpuWork, and posts 'done' back.
-// The thread stays alive for reuse — no per-job startup cost.
-if (!isMainThread && parentPort) {
-  const port = parentPort;
-  port.on('message', (msg: { durationMs: number }) => {
-    cpuWork(msg.durationMs);
-    port.postMessage('done');
-  });
-}
-
-// Fixed-size thread pool for CPU-bound work. Threads are created lazily and
-// reused across handler invocations. Pool size is capped at the number of CPU
-// cores (the VM has 2 vCPUs, so more threads just context-switch without benefit).
-
-const THREAD_POOL_SIZE = os.cpus().length;
-
-interface PooledWorker {
-  worker: Worker;
-  busy: boolean;
-}
-
-const threadPool: PooledWorker[] = [];
-const waitQueue: Array<{ durationMs: number; resolve: () => void; reject: (err: Error) => void }> = [];
-
-function getOrCreatePoolWorker(): PooledWorker | null {
-  // Find an idle worker
-  const idle = threadPool.find(pw => !pw.busy);
-  if (idle) return idle;
-
-  // Create a new worker if pool isn't full
-  if (threadPool.length < THREAD_POOL_SIZE) {
-    const w = new Worker(__filename, { workerData: {} });
-    const pw: PooledWorker = { worker: w, busy: false };
-    threadPool.push(pw);
-    return pw;
-  }
-
-  // Pool exhausted — caller must queue
-  return null;
-}
-
-function cpuWorkThreaded(durationMs: number): Promise<void> {
-  if (durationMs <= 0) return Promise.resolve();
-
-  return new Promise((resolve, reject) => {
-    const pw = getOrCreatePoolWorker();
-    if (!pw) {
-      // Queue until a thread becomes available
-      waitQueue.push({ durationMs, resolve, reject });
-      return;
-    }
-
-    dispatchToWorker(pw, durationMs, resolve, reject);
-  });
-}
-
-function dispatchToWorker(
-  pw: PooledWorker,
-  durationMs: number,
-  resolve: () => void,
-  reject: (err: Error) => void,
-) {
-  pw.busy = true;
-
-  const onMessage = () => {
-    cleanup();
-    pw.busy = false;
-    resolve();
-    drainQueue();
-  };
-
-  const onError = (err: Error) => {
-    cleanup();
-    // Replace dead worker
-    const idx = threadPool.indexOf(pw);
-    if (idx !== -1) threadPool.splice(idx, 1);
-    reject(err);
-    drainQueue();
-  };
-
-  function cleanup() {
-    pw.worker.off('message', onMessage);
-    pw.worker.off('error', onError);
-  }
-
-  pw.worker.on('message', onMessage);
-  pw.worker.on('error', onError);
-  pw.worker.postMessage({ durationMs });
-}
-
-function drainQueue() {
-  while (waitQueue.length > 0) {
-    const pw = getOrCreatePoolWorker();
-    if (!pw) break;
-    const item = waitQueue.shift()!;
-    dispatchToWorker(pw, item.durationMs, item.resolve, item.reject);
-  }
-}
-
 // ─── Barrier protocol (local mode) ──────────────────────
 
 function writeReady() {
@@ -336,7 +234,41 @@ async function runRestBalanced(httpSimPort: number): Promise<{ metrics: WorkerMe
   return { metrics: workerMetrics, wallClockS, stopReason };
 }
 
-// ─── REST-threaded mode runner (CPU work on worker_threads) ──
+// ─── REST-threaded mode runner (ThreadedJobWorker from SDK) ──
+
+/**
+ * Start a tiny HTTP server on the main thread to receive completion/error
+ * reports from the threaded handler module. This keeps the main event loop
+ * as the single source of truth for metrics without needing SharedArrayBuffer.
+ */
+function startMetricsServer(
+  workerMetrics: WorkerMetrics[],
+  onComplete: () => void,
+): Promise<{ port: number; close: () => void }> {
+  return new Promise((resolve) => {
+    const srv = http.createServer((req, res) => {
+      if (req.url === '/complete') {
+        const minWorker = workerMetrics.reduce((a, b) =>
+          a.completed < b.completed ? a : b
+        );
+        minWorker.completed++;
+        onComplete();
+      } else if (req.url === '/error') {
+        const minWorker = workerMetrics.reduce((a, b) =>
+          a.errors < b.errors ? a : b
+        );
+        minWorker.errors++;
+      }
+      res.writeHead(200);
+      res.end();
+    });
+    srv.listen(0, '127.0.0.1', () => {
+      const addr = srv.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      resolve({ port, close: () => srv.close() });
+    });
+  });
+}
 
 async function runRestThreaded(httpSimPort: number): Promise<{ metrics: WorkerMetrics[]; wallClockS: number; stopReason: StopReason }> {
   const { createCamundaClient } = await import('@camunda8/orchestration-cluster-api');
@@ -361,36 +293,28 @@ async function runRestThreaded(httpSimPort: number): Promise<{ metrics: WorkerMe
   const deadline = t0 + SCENARIO_TIMEOUT_S * 1000;
   const totalTarget = NUM_WORKERS * TARGET_PER_WORKER;
 
-  const jobWorker = client.createJobWorker({
+  // Metrics server: handler threads POST here to report completions/errors
+  const metricsServer = await startMetricsServer(workerMetrics, () => {
+    const totalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
+    if (totalCompleted >= totalTarget) done = true;
+  });
+
+  // Expose config to handler threads via env vars (inherited by worker_threads)
+  process.env.HTTP_SIM_PORT = String(httpSimPort);
+  process.env.METRICS_PORT = String(metricsServer.port);
+
+  // Resolve handler module path relative to this file
+  const handlerModule = new URL('./threaded-handler.ts', import.meta.url).pathname;
+
+  const jobWorker = client.createThreadedJobWorker({
     jobType: 'test-job',
+    handlerModule,
     maxParallelJobs: ACTIVATE_BATCH * NUM_WORKERS,
     jobTimeoutMs: 30_000,
     pollIntervalMs: 100,
     autoStart: true,
     validateSchemas: false,
-    jobHandler: async (job) => {
-      try {
-        // Offload CPU work to a worker thread — keeps event loop free for polling
-        if (HANDLER_TYPE === 'cpu' && HANDLER_LATENCY_MS > 0) {
-          await cpuWorkThreaded(HANDLER_LATENCY_MS);
-        } else if (HANDLER_TYPE === 'http' && httpSimPort > 0) {
-          await fetch(`http://127.0.0.1:${httpSimPort}/work`);
-        }
-
-        const minWorker = workerMetrics.reduce((a, b) =>
-          a.completed < b.completed ? a : b
-        );
-        minWorker.completed++;
-
-        const totalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
-        if (totalCompleted >= totalTarget) done = true;
-
-        return job.complete({ variables: { done: true } });
-      } catch (err) {
-        recordError(workerMetrics, err);
-        throw err;
-      }
-    },
+    threadPoolSize: os.cpus().length,
   });
 
   const aggregator = createAggregatorChecker();
@@ -402,6 +326,7 @@ async function runRestThreaded(httpSimPort: number): Promise<{ metrics: WorkerMe
 
   done = true;
   try { jobWorker.stop(); } catch { /* ignore */ }
+  metricsServer.close();
 
   const wallClockS = (Date.now() - t0) / 1000;
   const finalCompleted = workerMetrics.reduce((s, w) => s + w.completed, 0);
