@@ -1,0 +1,43 @@
+name: Update run index
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'results/runs/run-*.json'
+
+  # Allow manual trigger
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-index:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install tsx
+        run: npm install tsx
+
+      - name: Regenerate index.json
+        run: node --import tsx/esm scripts/build-run-index.ts
+
+      - name: Check for changes
+        id: diff
+        run: |
+          git diff --quiet results/runs/index.json && echo "changed=false" >> "$GITHUB_OUTPUT" || echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit updated index
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add results/runs/index.json
+          git commit -m "chore: regenerate run index [skip ci]"
+          git push

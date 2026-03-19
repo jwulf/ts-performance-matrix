@@ -2,8 +2,10 @@
  * Matrix Analysis — client-side application.
  *
  * All filtering, sorting, grouping, and rendering happens in the browser.
- * The server only provides the raw ScenarioResult[] array.
+ * Data is fetched via the adapter (GitHub Pages or local server).
  */
+
+import { adapter, getDataMode, canRefresh } from './data-adapter.js';
 
 // ─── Constants ───────────────────────────────────────────
 
@@ -248,10 +250,15 @@ async function init() {
   const savedState = loadPersistedViewState();
   if (savedState) applyViewState(savedState);
 
+  // Hide refresh button when GCS is not available (GitHub Pages mode)
+  if (!canRefresh()) {
+    refreshBtn.style.display = 'none';
+  }
+
   // Load run list
-  setStatus('Loading runs...');
+  setStatus(`Loading runs (${getDataMode()} mode)...`);
   try {
-    const runs = await fetchJson('/api/runs');
+    const runs = await adapter.listRuns();
     populateRunSelect(runs);
     setStatus(`${runs.length} runs found`);
 
@@ -304,24 +311,6 @@ async function init() {
 }
 
 // ─── Data Loading ────────────────────────────────────────
-
-async function fetchJson(url) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 600_000); // 10 min timeout
-  try {
-    const res = await fetch(url, { signal: controller.signal });
-    clearTimeout(timeoutId);
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`HTTP ${res.status}: ${body}`);
-    }
-    return res.json();
-  } catch (e) {
-    clearTimeout(timeoutId);
-    if (e.name === 'AbortError') throw new Error('Request timed out (10 min)');
-    throw e;
-  }
-}
 
 function populateRunSelect(runs) {
   runSelect.innerHTML = '<option value="">Select a run...</option>';
@@ -433,35 +422,7 @@ async function loadSelectedRun(refresh, stateToRestore) {
   }
 
   try {
-    const url = `/api/runs/${runId}?stream=1${refresh ? '&refresh=1' : ''}`;
-    const data = await new Promise((resolve, reject) => {
-      const es = new EventSource(url);
-
-      es.addEventListener('progress', (e) => {
-        addLogLine(e.data);
-      });
-
-      es.addEventListener('data', (e) => {
-        es.close();
-        try {
-          resolve(JSON.parse(e.data));
-        } catch (err) {
-          reject(new Error('Failed to parse response data'));
-        }
-      });
-
-      es.addEventListener('error', (e) => {
-        // SSE 'error' event can be a custom one with data or a connection error
-        if (e.data) {
-          es.close();
-          reject(new Error(e.data));
-        } else if (es.readyState === EventSource.CLOSED) {
-          // Connection closed without data event — likely empty result
-          reject(new Error('Connection closed without result'));
-        }
-        // Otherwise it might be a reconnection attempt by the browser — ignore
-      });
-    });
+    const data = await adapter.loadRun(runId, refresh, addLogLine);
 
     allData = data;
     enrichedData = allData.map(enrichScenario);
@@ -529,7 +490,7 @@ async function renderRunSummary(runId, scenarios) {
 
   // Fetch metadata for SDK versions (best effort)
   try {
-    const meta = await fetchJson(`/api/runs/${runId}/metadata`);
+    const meta = await adapter.loadRunMetadata(runId);
     if (meta && meta.sdkVersions) {
       let badges = '';
       for (const [lang, ver] of Object.entries(meta.sdkVersions)) {

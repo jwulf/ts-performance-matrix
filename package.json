@@ -13,7 +13,8 @@
     "matrix:gcp": "node --import tsx/esm src/run-matrix.ts",
     "matrix:dry": "node --import tsx/esm src/run-matrix.ts --local --dry-run",
     "matrix:quick": "node --import tsx/esm src/run-matrix.ts --local --workers 10 --wpp 1,2,5,10 --modes rest-balanced --handlers cpu --clusters 1broker --target 1000 --precreate 5000",
-    "analysis": "node --import tsx/esm src/analysis/server.ts"
+    "analysis": "node --import tsx/esm src/analysis/server.ts",
+    "build:index": "node --import tsx/esm scripts/build-run-index.ts"
   },
   "dependencies": {
     "@camunda8/orchestration-cluster-api": "^8.9.0-alpha.14",
