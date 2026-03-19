@@ -18,7 +18,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
 import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -27,6 +31,8 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicIntegerArray;
+
+import com.sun.net.httpserver.HttpServer;
 
 public class Worker {
 
@@ -113,6 +119,13 @@ public class Worker {
                     MAX_EXECUTION_THREADS, DESIRED_THREADS,
                     Runtime.getRuntime().availableProcessors(), 100);
 
+            // Start HTTP sim server if needed
+            int httpSimPort = 0;
+            if ("http".equals(HANDLER_TYPE) && HANDLER_LATENCY_MS > 0) {
+                httpSimPort = startHttpSimServer(HANDLER_LATENCY_MS);
+                System.out.printf("[java-worker] HTTP sim server on port %d%n", httpSimPort);
+            }
+
             // Signal ready (barrier protocol)
             writeReady();
             waitForGo();
@@ -140,21 +153,21 @@ public class Worker {
 
             Map<String, Integer> errorTypeCounts;
             if ("grpc-streaming".equals(SDK_MODE)) {
-                var result = runGrpcStreaming();
+                var result = runGrpcStreaming(httpSimPort);
                 workerCompleted = result.completed;
                 workerErrors = result.errors;
                 wallClockS = result.wallClockS;
                 errorTypeCounts = result.errorTypes;
                 stopReason = result.stopReason;
             } else if ("grpc-polling".equals(SDK_MODE)) {
-                var result = runGrpcPolling();
+                var result = runGrpcPolling(httpSimPort);
                 workerCompleted = result.completed;
                 workerErrors = result.errors;
                 wallClockS = result.wallClockS;
                 errorTypeCounts = result.errorTypes;
                 stopReason = result.stopReason;
             } else {
-                var result = runRest();
+                var result = runRest(httpSimPort);
                 workerCompleted = result.completed;
                 workerErrors = result.errors;
                 wallClockS = result.wallClockS;
@@ -231,14 +244,14 @@ public class Worker {
 
     record RestResult(int[] completed, int[] errors, double wallClockS, Map<String, Integer> errorTypes, String stopReason) {}
 
-    static RestResult runRest() throws Exception {
+    static RestResult runRest(int httpSimPort) throws Exception {
         var client = CamundaClient.newClientBuilder()
                 .restAddress(URI.create(BROKER_REST_URL))
                 .preferRestOverGrpc(true)
                 .numJobWorkerExecutionThreads(MAX_EXECUTION_THREADS)
                 .build();
         try {
-            return runWorker(client, false);
+            return runWorker(client, false, httpSimPort);
         } finally {
             client.close();
         }
@@ -255,7 +268,7 @@ public class Worker {
 
     // ─── gRPC streaming mode ─────────────────────────────────
 
-    static RestResult runGrpcStreaming() throws Exception {
+    static RestResult runGrpcStreaming(int httpSimPort) throws Exception {
         String grpcUri = BROKER_GRPC_URL.startsWith("http") ? BROKER_GRPC_URL : "http://" + BROKER_GRPC_URL;
         var client = CamundaClient.newClientBuilder()
                 .grpcAddress(URI.create(grpcUri))
@@ -263,7 +276,7 @@ public class Worker {
                 .numJobWorkerExecutionThreads(MAX_EXECUTION_THREADS)
                 .build();
         try {
-            return runWorker(client, true);
+            return runWorker(client, true, httpSimPort);
         } finally {
             client.close();
         }
@@ -271,7 +284,7 @@ public class Worker {
 
     // ─── gRPC polling mode ───────────────────────────────────
 
-    static RestResult runGrpcPolling() throws Exception {
+    static RestResult runGrpcPolling(int httpSimPort) throws Exception {
         String grpcUri = BROKER_GRPC_URL.startsWith("http") ? BROKER_GRPC_URL : "http://" + BROKER_GRPC_URL;
         var client = CamundaClient.newClientBuilder()
                 .grpcAddress(URI.create(grpcUri))
@@ -279,7 +292,7 @@ public class Worker {
                 .numJobWorkerExecutionThreads(MAX_EXECUTION_THREADS)
                 .build();
         try {
-            return runWorker(client, false);
+            return runWorker(client, false, httpSimPort);
         } finally {
             client.close();
         }
@@ -287,7 +300,7 @@ public class Worker {
 
     // ─── Common worker logic ─────────────────────────────────
 
-    static RestResult runWorker(CamundaClient client, boolean streamEnabled) throws Exception {
+    static RestResult runWorker(CamundaClient client, boolean streamEnabled, int httpSimPort) throws Exception {
         int totalTarget = NUM_WORKERS * TARGET_PER_WORKER;
         var workerCompleted = new AtomicIntegerArray(NUM_WORKERS);
         var workerErrors = new AtomicIntegerArray(NUM_WORKERS);
@@ -295,6 +308,21 @@ public class Worker {
         var done = new AtomicBoolean(false);
         // Track handler invocations for diagnostics
         var handlerInvocations = new AtomicInteger(0);
+
+        // Reusable HTTP client for sim server calls — connection pooling, no per-request overhead
+        var simHttpClient = ("http".equals(HANDLER_TYPE) && httpSimPort > 0)
+                ? HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()
+                : null;
+        var simRequest = (simHttpClient != null)
+                ? HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + httpSimPort + "/work")).GET().timeout(Duration.ofSeconds(5)).build()
+                : null;
+
+        // Cap in-flight completions to prevent unbounded job activation.
+        // Without this, the handler returns before the complete-command resolves,
+        // freeing the activation slot immediately. Under gRPC streaming this causes
+        // the broker to push jobs far faster than they're completed, exhausting disk.
+        int maxInFlight = ACTIVATE_BATCH * NUM_WORKERS;
+        var inflightSemaphore = new Semaphore(maxInFlight);
 
         long t0 = System.nanoTime();
         long deadline = t0 + (long) SCENARIO_TIMEOUT_S * 1_000_000_000L;
@@ -306,15 +334,19 @@ public class Worker {
 
                     if ("cpu".equals(HANDLER_TYPE) && HANDLER_LATENCY_MS > 0) {
                         cpuWork(HANDLER_LATENCY_MS);
-                    } else if ("http".equals(HANDLER_TYPE) && HANDLER_LATENCY_MS > 0) {
-                        Thread.sleep(HANDLER_LATENCY_MS);
+                    } else if (simHttpClient != null) {
+                        simHttpClient.send(simRequest, HttpResponse.BodyHandlers.discarding());
                     }
 
-                    // Complete the job asynchronously — never block the handler thread.
-                    // Blocking with .join() causes deadlock when many handlers pile up
-                    // (carrier-thread pinning in the SDK's internal HTTP client).
+                    // Acquire a permit before firing the async complete command.
+                    // This bounds in-flight completions so the broker isn't overwhelmed.
+                    inflightSemaphore.acquire();
+
+                    // Complete the job asynchronously — never block the handler thread
+                    // with .join() which causes deadlock from carrier-thread pinning.
                     jobClient.newCompleteCommand(job).variables("{\"done\":true}").send()
                         .whenComplete((result, error) -> {
+                            inflightSemaphore.release();
                             if (error == null) {
                                 int minIdx = minIndex(workerCompleted);
                                 workerCompleted.incrementAndGet(minIdx);
@@ -370,6 +402,27 @@ public class Worker {
                 .sorted((a, b) -> b.getValue().get() - a.getValue().get())
                 .forEach(e -> errorTypeCounts.put(e.getKey(), e.getValue().get()));
         return new RestResult(completed, errors, wallClockS, errorTypeCounts, stopReason);
+    }
+
+    // ─── HTTP sim server ─────────────────────────────────────
+
+    static int startHttpSimServer(int latencyMs) throws IOException {
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/work", exchange -> {
+            try {
+                Thread.sleep(latencyMs);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            byte[] body = "{\"ok\":true}".getBytes();
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.setExecutor(Executors.newCachedThreadPool());
+        server.start();
+        return server.getAddress().getPort();
     }
 
     // ─── CPU work simulation ─────────────────────────────────
