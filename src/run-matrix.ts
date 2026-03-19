@@ -823,6 +823,13 @@ async function runGcp(): Promise<void> {
 
 // ─── Entry point ─────────────────────────────────────────
 
+// Ensure node_modules matches package-lock.json (e.g. after git pull)
+{
+  const { execSync } = await import('node:child_process');
+  console.log('Running npm ci to ensure dependencies are up to date...');
+  execSync('npm ci --ignore-scripts', { cwd: REPO_ROOT, stdio: 'inherit' });
+}
+
 const t0 = Date.now();
 
 try {
