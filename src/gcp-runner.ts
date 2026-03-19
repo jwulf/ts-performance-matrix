@@ -1154,6 +1154,8 @@ const PROM_GAUGES = [
 // Gauges where all label variants should be summed into one value
 const PROM_GAUGE_SUM = [
   'jvm_memory_used_bytes',
+  'disk_free_bytes',
+  'disk_total_bytes',
 ];
 
 function parsePrometheusText(text: string): MetricsSnapshot {
@@ -1281,18 +1283,17 @@ async function sampleGaugesDuring(
   const samples: GaugeSample[] = [];
   while (!abortSignal.aborted) {
     try {
-      const [snap, disk] = await Promise.all([
-        scrapeMetricsGcp(opts, pool),
-        scrapeDiskUsageGcp(opts, pool),
-      ]);
+      const snap = await scrapeMetricsGcp(opts, pool);
+      const diskTotal = snap.gauges['disk_total_bytes'] || 0;
+      const diskFree = snap.gauges['disk_free_bytes'] || 0;
       samples.push({
         timestampMs: Date.now(),
         processCpu: snap.gauges['process_cpu_usage'] || 0,
         systemCpu: snap.gauges['system_cpu_usage'] || 0,
         memoryUsedBytes: snap.gauges['jvm_memory_used_bytes'] || 0,
         liveThreads: snap.gauges['jvm_threads_live_threads'] || 0,
-        diskUsedBytes: disk.usedBytes,
-        diskTotalBytes: disk.totalBytes,
+        diskUsedBytes: diskTotal - diskFree,
+        diskTotalBytes: diskTotal,
       });
     } catch {
       // Scrape failed — skip this sample
