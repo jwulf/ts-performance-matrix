@@ -689,7 +689,7 @@ ${uploadResult}
 apt-get update -qq && apt-get install -y -qq python3 python3-pip python3-venv > /dev/null
 python3 -m venv /opt/worker/venv
 # Install deps first (stable), then SDK with --pre (--no-deps prevents pulling pre-release transitive deps)
-/opt/worker/venv/bin/pip install httpx attrs pydantic python-dateutil loguru python-dotenv typing-extensions
+/opt/worker/venv/bin/pip install 'httpx>=0.27,<1' attrs pydantic python-dateutil loguru python-dotenv typing-extensions
 /opt/worker/venv/bin/pip install --pre --no-deps camunda-orchestration-sdk
 
 # Download worker script

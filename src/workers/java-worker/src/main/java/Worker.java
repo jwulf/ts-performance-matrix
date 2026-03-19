@@ -218,6 +218,7 @@ public class Worker {
 
             Files.writeString(Path.of(RESULT_FILE), mapper.writerWithDefaultPrettyPrinter().writeValueAsString(output));
             System.out.printf("[java-worker] Result written to %s%n", RESULT_FILE);
+            System.exit(0); // Force exit — SDK client keeps non-daemon threads alive
 
         } catch (Exception e) {
             System.err.printf("[java-worker] Fatal error: %s%n", e.getMessage());
