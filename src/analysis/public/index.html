@@ -30,6 +30,7 @@
     <button class="active" data-tab="explorer">Explorer</button>
     <button data-tab="comparison">Comparison</button>
     <button data-tab="ab">A/B Compare</button>
+    <button data-tab="insights">Insights</button>
   </div>
 
   <!-- Saved Views Bar -->
@@ -117,6 +118,44 @@
             </div>
             <div class="output-content" id="ab-output-content-b"></div>
           </div>
+        </div>
+      </div>
+
+      <!-- Insights Container (hidden unless Insights tab active) -->
+      <div class="insights-container hidden" id="insights-container">
+        <div class="insights-section" id="insights-leaderboard">
+          <h2>Language + Mode Leaderboard</h2>
+          <p class="insights-desc">Ranked by the number of scenarios each language+mode wins on throughput across all dimension combinations.</p>
+          <table class="insights-table" id="leaderboard-table">
+            <thead><tr id="leaderboard-head"></tr></thead>
+            <tbody id="leaderboard-body"></tbody>
+          </table>
+        </div>
+        <div class="insights-section" id="insights-winners">
+          <h2>Winners by Scenario</h2>
+          <p class="insights-desc">For each unique dimension combination, the language+mode with the highest throughput.</p>
+          <table class="insights-table" id="winners-table">
+            <thead><tr id="winners-head"></tr></thead>
+            <tbody id="winners-body"></tbody>
+          </table>
+        </div>
+        <div class="insights-section" id="insights-heatmaps">
+          <h2>Throughput Heatmaps</h2>
+          <p class="insights-desc">Optimal worker/process topology for each language+mode. Workers on one axis, processes on the other. Hotter = higher throughput.</p>
+          <div class="heatmap-controls">
+            <label>
+              Handler:
+              <select id="heatmap-handler">
+                <option value="cpu">CPU</option>
+                <option value="http">HTTP</option>
+              </select>
+            </label>
+            <label>
+              Cluster:
+              <select id="heatmap-cluster"></select>
+            </label>
+          </div>
+          <div class="heatmap-grid" id="heatmap-grid"></div>
         </div>
       </div>
 

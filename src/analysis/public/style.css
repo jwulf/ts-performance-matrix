@@ -787,3 +787,137 @@ tr:hover .copy-id-btn { opacity: 0.8; }
   flex-shrink: 0;
   border-top: 1px solid var(--border);
 }
+
+/* ─── Insights Tab ────────────────────────────────────── */
+
+.insights-container {
+  padding: 20px;
+  overflow-y: auto;
+  max-height: calc(100vh - 140px);
+}
+
+.insights-section {
+  margin-bottom: 40px;
+}
+
+.insights-section h2 {
+  font-size: 18px;
+  margin-bottom: 4px;
+  color: var(--text);
+}
+
+.insights-desc {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.insights-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.insights-table th {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 2px solid var(--border);
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.insights-table th.num { text-align: right; }
+
+.insights-table td {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.insights-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.insights-table td.rank { text-align: center; color: var(--text-muted); font-size: 12px; }
+.insights-table td.winner { color: var(--green); font-weight: 600; }
+
+.insights-table tr:hover { background: var(--surface2); }
+
+/* Heatmap */
+.heatmap-controls {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.heatmap-controls label {
+  color: var(--text-muted);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.heatmap-controls select {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.heatmap-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+}
+
+.heatmap-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  min-width: 280px;
+}
+
+.heatmap-card h3 {
+  font-size: 14px;
+  margin-bottom: 10px;
+  color: var(--text);
+}
+
+.heatmap-card table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.heatmap-card th {
+  padding: 4px 8px;
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 11px;
+  text-align: center;
+}
+
+.heatmap-card th.row-label {
+  text-align: right;
+  padding-right: 10px;
+}
+
+.heatmap-card td {
+  padding: 4px 8px;
+  text-align: center;
+  border-radius: 3px;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  min-width: 54px;
+}
+
+.heatmap-card td.empty { color: var(--text-muted); opacity: 0.3; }
+
+.heatmap-card .axis-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  margin-top: 6px;
+}

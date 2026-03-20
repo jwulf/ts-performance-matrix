@@ -210,11 +210,13 @@ function applyViewState(state) {
   if (state.currentTab) {
     currentTab = state.currentTab;
     document.querySelectorAll('#view-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === currentTab));
-    document.getElementById('sidebar').classList.toggle('hidden', currentTab === 'comparison');
-    comparisonControls.classList.toggle('hidden', currentTab === 'explorer' || currentTab === 'ab');
+    document.getElementById('sidebar').classList.toggle('hidden', currentTab === 'comparison' || currentTab === 'insights');
+    comparisonControls.classList.toggle('hidden', currentTab === 'explorer' || currentTab === 'ab' || currentTab === 'insights');
     abControls.classList.toggle('hidden', currentTab !== 'ab');
     abContainer.classList.toggle('hidden', currentTab !== 'ab');
-    tableContainer.classList.toggle('hidden', currentTab === 'ab');
+    tableContainer.classList.toggle('hidden', currentTab === 'ab' || currentTab === 'insights');
+    document.getElementById('insights-container').classList.toggle('hidden', currentTab !== 'insights');
+    document.getElementById('metric-toggles').classList.toggle('hidden', currentTab === 'insights');
   }
   if (state.currentOutputFormat) currentOutputFormat = state.currentOutputFormat;
   if (state.sortColumn) sortColumn = state.sortColumn;
@@ -402,12 +404,16 @@ async function init() {
     if (e.target.tagName !== 'BUTTON') return;
     currentTab = e.target.dataset.tab;
     document.querySelectorAll('#view-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === currentTab));
-    document.getElementById('sidebar').classList.toggle('hidden', currentTab === 'comparison');
-    comparisonControls.classList.toggle('hidden', currentTab === 'explorer' || currentTab === 'ab');
+    document.getElementById('sidebar').classList.toggle('hidden', currentTab === 'comparison' || currentTab === 'insights');
+    comparisonControls.classList.toggle('hidden', currentTab === 'explorer' || currentTab === 'ab' || currentTab === 'insights');
     abControls.classList.toggle('hidden', currentTab !== 'ab');
     abContainer.classList.toggle('hidden', currentTab !== 'ab');
-    tableContainer.classList.toggle('hidden', currentTab === 'ab');
-    renderTable();
+    tableContainer.classList.toggle('hidden', currentTab === 'ab' || currentTab === 'insights');
+    document.getElementById('insights-container').classList.toggle('hidden', currentTab !== 'insights');
+    document.getElementById('metric-toggles').classList.toggle('hidden', currentTab === 'insights');
+    outputSection.classList.toggle('hidden', currentTab === 'insights');
+    if (currentTab === 'insights') renderInsights();
+    else renderTable();
     persistViewState();
   });
 
@@ -433,6 +439,10 @@ async function init() {
   groupBySelect.addEventListener('change', () => { renderTable(); persistViewState(); });
   sortBySelect.addEventListener('change', () => { sortColumn = sortBySelect.value; renderTable(); persistViewState(); });
   sortOrderSelect.addEventListener('change', () => { sortAsc = sortOrderSelect.value === 'asc'; renderTable(); persistViewState(); });
+
+  // Heatmap controls
+  document.getElementById('heatmap-handler').addEventListener('change', () => { if (currentTab === 'insights') renderHeatmaps(); });
+  document.getElementById('heatmap-cluster').addEventListener('change', () => { if (currentTab === 'insights') renderHeatmaps(); });
 
   buildMetricToggles();
 
@@ -931,6 +941,12 @@ function renderTable() {
   // A/B mode: render split panels instead of the single table
   if (currentTab === 'ab') {
     renderABPanels();
+    return;
+  }
+
+  // Insights mode: render insights panels
+  if (currentTab === 'insights') {
+    renderInsights();
     return;
   }
 
@@ -1513,6 +1529,329 @@ function buildSection(title, rows) {
   }
   div.appendChild(dl);
   return div;
+}
+
+// ─── Insights Tab ────────────────────────────────────────
+
+function renderInsights() {
+  if (enrichedData.length === 0) return;
+
+  renderLeaderboard();
+  renderWinnersTable();
+  renderHeatmaps();
+}
+
+/**
+ * For each unique dimension combo (cluster, handler, totalWorkers, workersPerProcess),
+ * find the language+mode with the highest throughput.
+ * Returns { winners: [{dims, winner, throughput, ...}], leaderboard: [{langMode, wins}] }
+ */
+function computeWinners() {
+  // Group scenarios by their "race" — same cluster + handler + totalWorkers + WPP
+  const races = new Map();
+  for (const s of enrichedData) {
+    const key = `${s.cluster}|${s.handlerType}|${s.totalWorkers}|${s.workersPerProcess}`;
+    if (!races.has(key)) races.set(key, []);
+    races.get(key).push(s);
+  }
+
+  const winners = [];
+  for (const [key, contestants] of races) {
+    // Find the one with best throughput
+    let best = null;
+    for (const c of contestants) {
+      if (c.aggregateThroughput == null) continue;
+      if (!best || c.aggregateThroughput > best.aggregateThroughput) best = c;
+    }
+    if (!best) continue;
+    const [cluster, handler, tw, wpp] = key.split('|');
+    winners.push({
+      cluster,
+      handler,
+      totalWorkers: Number(tw),
+      workersPerProcess: Number(wpp),
+      processes: Number(tw) / Number(wpp),
+      winner: `${best.sdkLanguage} / ${best.sdkMode}`,
+      throughput: best.aggregateThroughput,
+      runnerUp: (() => {
+        const others = contestants.filter((c) => c !== best && c.aggregateThroughput != null);
+        others.sort((a, b) => b.aggregateThroughput - a.aggregateThroughput);
+        return others[0] ? { name: `${others[0].sdkLanguage} / ${others[0].sdkMode}`, throughput: others[0].aggregateThroughput } : null;
+      })(),
+    });
+  }
+
+  // Sort winners by throughput descending
+  winners.sort((a, b) => b.throughput - a.throughput);
+
+  // Leaderboard: count wins per language+mode
+  const winCounts = new Map();
+  for (const w of winners) {
+    winCounts.set(w.winner, (winCounts.get(w.winner) || 0) + 1);
+  }
+  const leaderboard = [...winCounts.entries()]
+    .map(([langMode, wins]) => ({ langMode, wins }))
+    .sort((a, b) => b.wins - a.wins);
+
+  return { winners, leaderboard };
+}
+
+function renderLeaderboard() {
+  const { leaderboard, winners } = computeWinners();
+  const totalRaces = winners.length;
+
+  const head = document.getElementById('leaderboard-head');
+  const body = document.getElementById('leaderboard-body');
+  head.innerHTML = '';
+  body.innerHTML = '';
+
+  const cols = ['#', 'Language + Mode', 'Wins', 'Win %', 'Trend'];
+  for (const c of cols) {
+    const th = document.createElement('th');
+    th.textContent = c;
+    if (c === '#') th.style.cssText = 'width: 36px; text-align: center;';
+    if (['Wins', 'Win %'].includes(c)) th.className = 'num';
+    head.appendChild(th);
+  }
+
+  for (let i = 0; i < leaderboard.length; i++) {
+    const { langMode, wins } = leaderboard[i];
+    const pct = totalRaces > 0 ? ((wins / totalRaces) * 100).toFixed(1) : '0';
+    const tr = document.createElement('tr');
+
+    const tdRank = document.createElement('td');
+    tdRank.className = 'rank';
+    tdRank.textContent = String(i + 1);
+    tr.appendChild(tdRank);
+
+    const tdName = document.createElement('td');
+    tdName.className = 'winner';
+    tdName.textContent = langMode;
+    tr.appendChild(tdName);
+
+    const tdWins = document.createElement('td');
+    tdWins.className = 'num';
+    tdWins.textContent = String(wins);
+    tr.appendChild(tdWins);
+
+    const tdPct = document.createElement('td');
+    tdPct.className = 'num';
+    tdPct.textContent = pct + '%';
+    tr.appendChild(tdPct);
+
+    // Mini bar
+    const tdBar = document.createElement('td');
+    const maxWins = leaderboard[0].wins;
+    const barWidth = maxWins > 0 ? (wins / maxWins) * 100 : 0;
+    tdBar.innerHTML = `<div style="background: var(--green); height: 8px; border-radius: 4px; width: ${barWidth}%; opacity: 0.7;"></div>`;
+    tr.appendChild(tdBar);
+
+    body.appendChild(tr);
+  }
+}
+
+function renderWinnersTable() {
+  const { winners } = computeWinners();
+
+  const head = document.getElementById('winners-head');
+  const body = document.getElementById('winners-body');
+  head.innerHTML = '';
+  body.innerHTML = '';
+
+  const cols = [
+    { label: '#', cls: '' },
+    { label: 'Cluster', cls: '' },
+    { label: 'Handler', cls: '' },
+    { label: 'Workers', cls: 'num' },
+    { label: 'WPP', cls: 'num' },
+    { label: 'Processes', cls: 'num' },
+    { label: 'Winner', cls: '' },
+    { label: 'Throughput', cls: 'num' },
+    { label: 'Runner-up', cls: '' },
+    { label: 'Gap', cls: 'num' },
+  ];
+
+  for (const c of cols) {
+    const th = document.createElement('th');
+    th.textContent = c.label;
+    if (c.cls) th.className = c.cls;
+    if (c.label === '#') th.style.cssText = 'width: 36px; text-align: center;';
+    head.appendChild(th);
+  }
+
+  for (let i = 0; i < winners.length; i++) {
+    const w = winners[i];
+    const tr = document.createElement('tr');
+
+    const cells = [
+      { text: String(i + 1), cls: 'rank' },
+      { text: w.cluster, cls: '' },
+      { text: w.handler, cls: '' },
+      { text: String(w.totalWorkers), cls: 'num' },
+      { text: String(w.workersPerProcess), cls: 'num' },
+      { text: String(w.processes), cls: 'num' },
+      { text: w.winner, cls: 'winner' },
+      { text: w.throughput.toFixed(1), cls: 'num' },
+      { text: w.runnerUp ? w.runnerUp.name : '—', cls: '' },
+      { text: w.runnerUp ? ((1 - w.runnerUp.throughput / w.throughput) * 100).toFixed(1) + '%' : '—', cls: 'num' },
+    ];
+
+    for (const c of cells) {
+      const td = document.createElement('td');
+      td.textContent = c.text;
+      if (c.cls) td.className = c.cls;
+      tr.appendChild(td);
+    }
+    body.appendChild(tr);
+  }
+}
+
+function renderHeatmaps() {
+  const grid = document.getElementById('heatmap-grid');
+  const handlerSelect = document.getElementById('heatmap-handler');
+  const clusterSelect = document.getElementById('heatmap-cluster');
+  grid.innerHTML = '';
+
+  const handler = handlerSelect.value;
+
+  // Populate cluster dropdown from data
+  const clusters = [...new Set(enrichedData.map((s) => s.cluster))].sort();
+  if (clusterSelect.options.length === 0 || clusterSelect.dataset.built !== clusters.join(',')) {
+    clusterSelect.innerHTML = '';
+    for (const c of clusters) {
+      const opt = document.createElement('option');
+      opt.value = c;
+      opt.textContent = c;
+      clusterSelect.appendChild(opt);
+    }
+    clusterSelect.dataset.built = clusters.join(',');
+  }
+  const cluster = clusterSelect.value;
+
+  // Filter to selected handler + cluster
+  const subset = enrichedData.filter((s) => s.handlerType === handler && s.cluster === cluster);
+
+  // Group by language+mode
+  const langModes = new Map();
+  for (const s of subset) {
+    const key = `${s.sdkLanguage} / ${s.sdkMode}`;
+    if (!langModes.has(key)) langModes.set(key, []);
+    langModes.get(key).push(s);
+  }
+
+  // Determine axis values across ALL language+modes for consistent axes
+  const allWorkers = [...new Set(subset.map((s) => s.totalWorkers))].sort((a, b) => a - b);
+  const allWPP = [...new Set(subset.map((s) => s.workersPerProcess))].sort((a, b) => a - b);
+
+  // Find global max throughput for consistent color scale
+  let globalMax = 0;
+  for (const s of subset) {
+    if (s.aggregateThroughput > globalMax) globalMax = s.aggregateThroughput;
+  }
+
+  for (const [langMode, scenarios] of langModes) {
+    const card = document.createElement('div');
+    card.className = 'heatmap-card';
+
+    const h3 = document.createElement('h3');
+    h3.textContent = langMode;
+    card.appendChild(h3);
+
+    // Build lookup: (totalWorkers, wpp) -> throughput
+    const lookup = new Map();
+    let localMax = 0;
+    for (const s of scenarios) {
+      const k = `${s.totalWorkers}|${s.workersPerProcess}`;
+      if (s.aggregateThroughput != null) {
+        lookup.set(k, s.aggregateThroughput);
+        if (s.aggregateThroughput > localMax) localMax = s.aggregateThroughput;
+      }
+    }
+
+    const table = document.createElement('table');
+
+    // Header row: WPP values
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    const cornerTh = document.createElement('th');
+    cornerTh.className = 'row-label';
+    cornerTh.textContent = 'W \\ WPP';
+    headerRow.appendChild(cornerTh);
+    for (const wpp of allWPP) {
+      const th = document.createElement('th');
+      th.textContent = String(wpp);
+      headerRow.appendChild(th);
+    }
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    // Body: rows = totalWorkers, cols = WPP
+    const tbody = document.createElement('tbody');
+    for (const w of allWorkers) {
+      const tr = document.createElement('tr');
+      const labelTd = document.createElement('th');
+      labelTd.className = 'row-label';
+      labelTd.textContent = String(w);
+      tr.appendChild(labelTd);
+
+      for (const wpp of allWPP) {
+        const td = document.createElement('td');
+        // Only valid if totalWorkers divisible by wpp
+        if (w % wpp !== 0) {
+          td.className = 'empty';
+          td.textContent = '—';
+        } else {
+          const val = lookup.get(`${w}|${wpp}`);
+          if (val != null) {
+            td.textContent = val.toFixed(0);
+            // Color: interpolate from dark blue (cold) to red/orange (hot)
+            const intensity = globalMax > 0 ? val / globalMax : 0;
+            td.style.background = heatColor(intensity);
+            td.style.color = intensity > 0.6 ? '#000' : 'var(--text)';
+            td.title = `${val.toFixed(1)} ops/s | W=${w}, WPP=${wpp}, P=${w/wpp}`;
+          } else {
+            td.className = 'empty';
+            td.textContent = '—';
+          }
+        }
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    card.appendChild(table);
+
+    // Axis labels
+    const xLabel = document.createElement('div');
+    xLabel.className = 'axis-label';
+    xLabel.textContent = 'Workers Per Process →';
+    card.appendChild(xLabel);
+
+    grid.appendChild(card);
+  }
+}
+
+/**
+ * Map a 0..1 intensity to a heatmap color.
+ * 0 = cool (dark blue), 0.5 = warm (yellow), 1 = hot (bright red/orange).
+ */
+function heatColor(t) {
+  // 5-stop gradient: #1a1a2e → #16537e → #f6d365 → #fda085 → #f85149
+  const stops = [
+    [26, 26, 46],     // 0.0 — dark blue
+    [22, 83, 126],    // 0.25 — blue
+    [246, 211, 101],  // 0.5 — yellow
+    [253, 160, 133],  // 0.75 — peach
+    [248, 81, 73],    // 1.0 — red
+  ];
+  const idx = Math.min(t * (stops.length - 1), stops.length - 1.001);
+  const lo = Math.floor(idx);
+  const hi = lo + 1;
+  const frac = idx - lo;
+  const r = Math.round(stops[lo][0] + (stops[hi][0] - stops[lo][0]) * frac);
+  const g = Math.round(stops[lo][1] + (stops[hi][1] - stops[lo][1]) * frac);
+  const b = Math.round(stops[lo][2] + (stops[hi][2] - stops[lo][2]) * frac);
+  return `rgb(${r}, ${g}, ${b})`;
 }
 
 // ─── Boot ────────────────────────────────────────────────
