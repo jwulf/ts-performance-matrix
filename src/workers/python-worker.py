@@ -17,11 +17,14 @@ import math
 import os
 import sys
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 
-from camunda_orchestration_sdk import CamundaAsyncClient
-from camunda_orchestration_sdk.runtime.job_worker import WorkerConfig
+from camunda_orchestration_sdk import (
+    CamundaAsyncClient,
+    ConnectedJobContext,
+    SyncJobContext,
+    WorkerConfig,
+)
 
 # ─── Config ──────────────────────────────────────────────
 
@@ -74,29 +77,9 @@ def send_heartbeat(total_completed: int):
 
     threading.Thread(target=_do, daemon=True).start()
 
-# ─── HTTP sim server ─────────────────────────────────────
+# ─── HTTP sim server port (provided externally by Node.js sim server) ────
 
-http_sim_port = 0
-
-
-class SimHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        time.sleep(HANDLER_LATENCY_MS / 1000.0)
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(b'{"ok":true}')
-
-    def log_message(self, format, *args):
-        pass  # suppress logs
-
-
-def start_http_sim_server(latency_ms: int) -> int:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), SimHandler)
-    port = server.server_address[1]
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    return port
+http_sim_port = int(os.environ.get("HTTP_SIM_PORT", "0"))
 
 
 # ─── CPU work simulation ─────────────────────────────────
@@ -212,6 +195,9 @@ async def run_rest(http_sim_port: int):
     os.environ["CAMUNDA_REST_ADDRESS"] = BROKER_REST_URL
     os.environ["CAMUNDA_AUTH_STRATEGY"] = "NONE"
 
+    # HTTP client for sim server calls — generous timeout for 200ms handler
+    http_client = httpx.AsyncClient(timeout=5.0) if (HANDLER_TYPE == "http" and http_sim_port > 0) else None
+
     async with CamundaAsyncClient() as client:
         config = WorkerConfig(
             job_type="test-job",
@@ -219,10 +205,7 @@ async def run_rest(http_sim_port: int):
             max_concurrent_jobs=ACTIVATE_BATCH * NUM_WORKERS,
         )
 
-        # HTTP client for sim server calls — generous timeout for 200ms handler
-        http_client = httpx.AsyncClient(timeout=5.0) if (HANDLER_TYPE == "http" and http_sim_port > 0) else None
-
-        async def handler(job):
+        async def handler(job: ConnectedJobContext) -> dict:
             nonlocal done
             try:
                 # Simulate work
@@ -238,15 +221,12 @@ async def run_rest(http_sim_port: int):
                 if total >= total_target:
                     done = True
 
-                # Return dict to auto-complete with these variables
                 return {"done": True}
             except Exception as e:
                 record_error(worker_errors, e)
                 raise
 
-        worker = client.create_job_worker(
-            config=config, callback=handler, auto_start=True,
-        )
+        client.create_job_worker(config=config, callback=handler)
 
         # Run workers as background task, poll for completion, aggregator stop, or timeout
         worker_task = asyncio.create_task(client.run_workers())
@@ -296,8 +276,8 @@ async def run_rest_threaded(http_sim_port: int):
             max_concurrent_jobs=ACTIVATE_BATCH * NUM_WORKERS,
         )
 
-        # Sync handler — runs in ThreadPoolExecutor
-        def handler(job):
+        # Sync handler — runs in ThreadPoolExecutor, receives SyncJobContext with sync client
+        def handler(job: SyncJobContext) -> dict:
             nonlocal done
             try:
                 # Simulate work
@@ -318,9 +298,9 @@ async def run_rest_threaded(http_sim_port: int):
                 record_error(worker_errors, e)
                 raise
 
-        worker = client.create_job_worker(
+        client.create_job_worker(
             config=config, callback=handler,
-            execution_strategy="thread", auto_start=True,
+            execution_strategy="thread",
         )
 
         # Run workers as background task, poll for completion, aggregator stop, or timeout
@@ -345,9 +325,10 @@ async def main():
     print(f"[python-worker] id={PROCESS_ID} mode={SDK_MODE} handler={HANDLER_TYPE} workers={NUM_WORKERS}", flush=True)
     print(f"[python-worker] target={TARGET_PER_WORKER}/worker broker={BROKER_REST_URL}", flush=True)
 
-    global http_sim_port
-    if HANDLER_TYPE == "http" and HANDLER_LATENCY_MS > 0:
-        http_sim_port = start_http_sim_server(HANDLER_LATENCY_MS)
+    if HANDLER_TYPE == "http" and http_sim_port > 0:
+        print(f"[python-worker] Using external HTTP sim server on port {http_sim_port}", flush=True)
+    elif HANDLER_TYPE == "http":
+        print("[python-worker] WARNING: HANDLER_TYPE=http but HTTP_SIM_PORT not set", flush=True)
 
     # Signal ready (barrier protocol)
     write_ready()

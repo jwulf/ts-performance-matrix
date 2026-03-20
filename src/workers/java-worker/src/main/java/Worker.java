@@ -18,7 +18,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
-import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -31,8 +30,6 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicIntegerArray;
-
-import com.sun.net.httpserver.HttpServer;
 
 public class Worker {
 
@@ -51,6 +48,9 @@ public class Worker {
     static final String RESULT_FILE = env("RESULT_FILE", "./result.json");
     static final String READY_FILE = env("READY_FILE", "");
     static final String GO_FILE = env("GO_FILE", "");
+
+    // External HTTP sim server port (provided by Node.js sim server)
+    static final int HTTP_SIM_PORT = envInt("HTTP_SIM_PORT", 0);
 
     // Aggregator-based pool exhaustion detection
     static final String AGGREGATOR_URL = env("AGGREGATOR_URL", "");
@@ -119,11 +119,12 @@ public class Worker {
                     MAX_EXECUTION_THREADS, DESIRED_THREADS,
                     Runtime.getRuntime().availableProcessors(), 100);
 
-            // Start HTTP sim server if needed
-            int httpSimPort = 0;
-            if ("http".equals(HANDLER_TYPE) && HANDLER_LATENCY_MS > 0) {
-                httpSimPort = startHttpSimServer(HANDLER_LATENCY_MS);
-                System.out.printf("[java-worker] HTTP sim server on port %d%n", httpSimPort);
+            // Use external HTTP sim server port if provided
+            int httpSimPort = HTTP_SIM_PORT;
+            if ("http".equals(HANDLER_TYPE) && httpSimPort > 0) {
+                System.out.printf("[java-worker] Using external HTTP sim server on port %d%n", httpSimPort);
+            } else if ("http".equals(HANDLER_TYPE)) {
+                System.out.println("[java-worker] WARNING: HANDLER_TYPE=http but HTTP_SIM_PORT not set");
             }
 
             // Signal ready (barrier protocol)
@@ -403,31 +404,6 @@ public class Worker {
                 .sorted((a, b) -> b.getValue().get() - a.getValue().get())
                 .forEach(e -> errorTypeCounts.put(e.getKey(), e.getValue().get()));
         return new RestResult(completed, errors, wallClockS, errorTypeCounts, stopReason);
-    }
-
-    // ─── HTTP sim server ─────────────────────────────────────
-
-    static int startHttpSimServer(int latencyMs) throws IOException {
-        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/work", exchange -> {
-            try {
-                Thread.sleep(latencyMs);
-            } catch (InterruptedException ignored) {
-                Thread.currentThread().interrupt();
-            }
-            byte[] body = "{\"ok\":true}".getBytes();
-            exchange.getResponseHeaders().set("Content-Type", "application/json");
-            exchange.sendResponseHeaders(200, body.length);
-            exchange.getResponseBody().write(body);
-            exchange.close();
-        });
-        server.setExecutor(Executors.newCachedThreadPool(r -> {
-            Thread t = new Thread(r);
-            t.setDaemon(true);
-            return t;
-        }));
-        server.start();
-        return server.getAddress().getPort();
     }
 
     // ─── CPU work simulation ─────────────────────────────────

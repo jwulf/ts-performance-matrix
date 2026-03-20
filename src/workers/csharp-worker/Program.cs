@@ -99,13 +99,15 @@ try
     Console.WriteLine($"[csharp-worker] id={PROCESS_ID} mode={SDK_MODE} handler={HANDLER_TYPE} workers={NUM_WORKERS}");
     Console.WriteLine($"[csharp-worker] target={TARGET_PER_WORKER}/worker broker={BROKER_REST_URL}");
 
-    // Start HTTP sim server if needed
-    int httpSimPort = 0;
-    CancellationTokenSource? simCts = null;
-    if (HANDLER_TYPE == "http" && HANDLER_LATENCY_MS > 0)
+    // Use external HTTP sim server port if provided
+    int httpSimPort = EnvInt("HTTP_SIM_PORT", 0);
+    if (HANDLER_TYPE == "http" && httpSimPort > 0)
     {
-        simCts = new CancellationTokenSource();
-        httpSimPort = await StartHttpSimServer(HANDLER_LATENCY_MS, simCts.Token);
+        Console.WriteLine($"[csharp-worker] Using external HTTP sim server on port {httpSimPort}");
+    }
+    else if (HANDLER_TYPE == "http")
+    {
+        Console.WriteLine("[csharp-worker] WARNING: HANDLER_TYPE=http but HTTP_SIM_PORT not set");
     }
 
     // Signal ready (barrier protocol)
@@ -118,8 +120,6 @@ try
     memSampler.Start();
 
     var (workerCompleted, workerErrors, wallClockS, stopReason) = await RunRest(httpSimPort);
-
-    simCts?.Cancel();
 
     var totalCompleted = workerCompleted.Sum();
     var totalErrors = workerErrors.Sum();
@@ -269,49 +269,6 @@ static void CpuWork(int durationMs)
     double x = 0;
     while (Stopwatch.GetTimestamp() < end)
         x += Math.Sin(x + 1);
-}
-
-// ─── HTTP sim server ─────────────────────────────────────
-
-static async Task<int> StartHttpSimServer(int latencyMs, CancellationToken ct)
-{
-    var listener = new HttpListener();
-    listener.Prefixes.Add("http://127.0.0.1:0/");
-    // HttpListener doesn't support port 0 well — use TcpListener to find a free port
-    var tcp = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-    tcp.Start();
-    var port = ((IPEndPoint)tcp.LocalEndpoint).Port;
-    tcp.Stop();
-
-    listener = new HttpListener();
-    listener.Prefixes.Add($"http://127.0.0.1:{port}/");
-    listener.Start();
-
-    _ = Task.Run(async () =>
-    {
-        while (!ct.IsCancellationRequested)
-        {
-            try
-            {
-                var ctx = await listener.GetContextAsync();
-                _ = Task.Run(async () =>
-                {
-                    await Task.Delay(latencyMs, CancellationToken.None);
-                    ctx.Response.StatusCode = 200;
-                    ctx.Response.ContentType = "application/json";
-                    await using var sw = new StreamWriter(ctx.Response.OutputStream);
-                    await sw.WriteAsync("{\"ok\":true}");
-                    ctx.Response.Close();
-                });
-            }
-            catch (ObjectDisposedException) { break; }
-            catch (HttpListenerException) { break; }
-        }
-        listener.Close();
-    }, ct);
-
-    await Task.Delay(50, CancellationToken.None); // let server start
-    return port;
 }
 
 // ─── Barrier protocol ────────────────────────────────────

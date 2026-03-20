@@ -33,6 +33,7 @@ const DOCKER_DIR = path.join(REPO_ROOT, 'docker');
 const COMPOSE_1BROKER = path.join(DOCKER_DIR, 'docker-compose.1broker.yaml');
 const COMPOSE_3BROKER = path.join(DOCKER_DIR, 'docker-compose.3broker.yaml');
 const WORKER_SCRIPT = path.join(import.meta.dirname, 'worker-process.ts');
+const HTTP_SIM_SERVER_SCRIPT = path.join(import.meta.dirname, 'http-sim-server.ts');
 const RESULTS_DIR = path.join(REPO_ROOT, 'results');
 
 // ─── Shell helpers ───────────────────────────────────────
@@ -56,6 +57,50 @@ function runCmd(cmd: string, args: string[], timeoutMs = 90_000): { stdout: stri
 
 function sleepSync(ms: number) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// ─── Shared HTTP sim server ──────────────────────────────
+
+/**
+ * Start the shared Node.js HTTP sim server for HTTP handler scenarios.
+ * Returns the port and a cleanup function that kills the server process.
+ */
+function startSharedHttpSimServer(tmpDir: string): { port: number; kill: () => void } {
+  const portFile = path.join(tmpDir, 'http-sim-port');
+  const child = childProcess.spawn('tsx', [HTTP_SIM_SERVER_SCRIPT], {
+    env: {
+      ...process.env as Record<string, string>,
+      HANDLER_LATENCY_MS: String(DEFAULT_HANDLER_LATENCY_MS),
+      HTTP_SIM_PORT_FILE: portFile,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: REPO_ROOT,
+  });
+
+  child.stdout?.on('data', (data: Buffer) => {
+    process.stdout.write(`  [http-sim] ${data.toString().trim()}\n`);
+  });
+  child.stderr?.on('data', (data: Buffer) => {
+    const msg = data.toString().trim();
+    if (msg) process.stderr.write(`  [http-sim] ${msg}\n`);
+  });
+
+  // Wait for port file to appear (up to 10s)
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(portFile)) {
+      const port = parseInt(fs.readFileSync(portFile, 'utf-8').trim(), 10);
+      if (port > 0) {
+        return {
+          port,
+          kill: () => { try { child.kill('SIGTERM'); } catch { /* ignore */ } },
+        };
+      }
+    }
+    sleepSync(50);
+  }
+  try { child.kill('SIGTERM'); } catch { /* ignore */ }
+  throw new Error('HTTP sim server failed to start within 10s');
 }
 
 // ─── Container management ────────────────────────────────
@@ -470,6 +515,13 @@ export async function runScenarioLocal(
   fs.mkdirSync(readyDir, { recursive: true });
   fs.mkdirSync(resultsDir, { recursive: true });
 
+  // Start shared HTTP sim server for http handler scenarios
+  let httpSimServer: { port: number; kill: () => void } | null = null;
+  if (handlerType === 'http') {
+    httpSimServer = startSharedHttpSimServer(tmpDir);
+    console.log(`  [${scenario.id}] Shared HTTP sim server on port ${httpSimServer.port}`);
+  }
+
   // Spawn P child processes
   const children: childProcess.ChildProcess[] = [];
   for (let p = 0; p < P; p++) {
@@ -490,6 +542,7 @@ export async function runScenarioLocal(
       RESULT_FILE: path.join(resultsDir, `${processId}.json`),
       READY_FILE: path.join(readyDir, processId),
       GO_FILE: goFile,
+      ...(httpSimServer ? { HTTP_SIM_PORT: String(httpSimServer.port) } : {}),
     };
 
     const child = childProcess.spawn('tsx', [WORKER_SCRIPT], {
@@ -556,6 +609,9 @@ export async function runScenarioLocal(
   for (const child of children) {
     try { child.kill('SIGTERM'); } catch { /* ignore */ }
   }
+
+  // Stop shared HTTP sim server
+  if (httpSimServer) httpSimServer.kill();
 
   const wallClockS = (Date.now() - t0) / 1000;
 

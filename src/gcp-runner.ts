@@ -371,6 +371,10 @@ function buildWorkerPackage(opts: GcpOptions, language: SdkLanguage): string {
   const pkgDir = path.resolve(import.meta.dirname, '..');
   const gcsPrefix = `gs://${opts.bucket}/${opts.runId}`;
 
+  // Upload shared HTTP sim server script (used by all languages for http handler scenarios)
+  const httpSimScript = path.resolve(import.meta.dirname, 'http-sim-server.ts');
+  gsutil(['cp', httpSimScript, `${gcsPrefix}/http-sim-server.ts`]);
+
   switch (language) {
     case 'ts': {
       const nodeModules = path.join(pkgDir, 'node_modules');
@@ -548,6 +552,7 @@ function workerStartupScript(
     totalProcesses: number;
   },
 ): string {
+  // The envBlock uses $HTTP_SIM_PORT which is set by the sim server startup (or empty for cpu handlers)
   const envBlock = `WORKER_PROCESS_ID=${workerId} \\
 SDK_MODE=${config.sdkMode} \\
 HANDLER_TYPE=${config.handlerType} \\
@@ -560,6 +565,7 @@ SCENARIO_TIMEOUT_S=${config.scenarioTimeout} \\
 BROKER_REST_URL=${config.brokerRestUrl} \\
 BROKER_GRPC_URL=${config.brokerGrpcUrl} \\
 AGGREGATOR_URL=${config.aggregatorUrl} \\
+HTTP_SIM_PORT=\${HTTP_SIM_PORT:-0} \\
 RESULT_FILE=/opt/worker/result.json`;
 
   // --- Producer configuration (leader only) ---
@@ -652,6 +658,31 @@ while ! gsutil -q stat gs://${opts.bucket}/${opts.runId}/scenarios/${scenarioId}
 done
 ${leaderStartContinuous}`;
 
+  // Bash snippet to start the shared Node.js HTTP sim server (for http handler scenarios)
+  // Node.js must already be installed before this runs.
+  const simServerSetup = config.handlerType === 'http' ? `
+# Start shared Node.js HTTP sim server
+gsutil cp gs://${opts.bucket}/${opts.runId}/http-sim-server.ts /opt/worker/http-sim-server.ts
+HANDLER_LATENCY_MS=20 HTTP_SIM_PORT_FILE=/opt/worker/http-sim-port npx tsx /opt/worker/http-sim-server.ts &
+SIM_PID=$!
+echo "[worker] Waiting for HTTP sim server..."
+for i in $(seq 1 100); do
+  [ -f /opt/worker/http-sim-port ] && break
+  sleep 0.1
+done
+export HTTP_SIM_PORT=$(cat /opt/worker/http-sim-port)
+echo "[worker] HTTP sim server on port $HTTP_SIM_PORT (PID=$SIM_PID)"
+` : `
+export HTTP_SIM_PORT=0
+`;
+
+  // Node.js installation snippet (needed by all languages for tsx to run the sim server)
+  const nodeInstall = `
+# Install Node.js 22
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+apt-get install -y nodejs
+`;
+
   const uploadResult = `${leaderStopProducer}
 # Upload result
 gsutil cp /opt/worker/result.json \\
@@ -663,9 +694,7 @@ sleep 60 && shutdown -h now &`;
   switch (config.sdkLanguage) {
     case 'ts':
       return `${logPreamble}
-# Install Node.js 22
-curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-apt-get install -y nodejs
+${nodeInstall}
 
 # Download and extract worker package
 mkdir -p /opt/worker
@@ -673,6 +702,7 @@ gsutil cp gs://${opts.bucket}/${opts.runId}/worker-package-ts.tar.gz /opt/worker
 cd /opt/worker && tar xzf worker-package-ts.tar.gz
 npm install @esbuild/linux-x64
 
+${simServerSetup}
 ${barrierReady}
 
 # Run worker
@@ -685,6 +715,8 @@ ${uploadResult}
 
     case 'python':
       return `${logPreamble}
+${nodeInstall}
+
 # Install Python 3 + Camunda SDK in a venv (avoids system package conflicts)
 apt-get update -qq && apt-get install -y -qq python3 python3-pip python3-venv > /dev/null
 python3 -m venv /opt/worker/venv
@@ -696,6 +728,7 @@ python3 -m venv /opt/worker/venv
 mkdir -p /opt/worker
 gsutil cp gs://${opts.bucket}/${opts.runId}/python-worker.py /opt/worker/
 
+${simServerSetup}
 ${barrierReady}
 
 # Run worker
@@ -708,12 +741,15 @@ ${uploadResult}
 
     case 'csharp':
       return `${logPreamble}
+${nodeInstall}
+
 # Download and extract self-contained C# worker
 mkdir -p /opt/worker
 gsutil cp gs://${opts.bucket}/${opts.runId}/worker-package-csharp.tar.gz /opt/worker/
 cd /opt/worker && tar xzf worker-package-csharp.tar.gz
 chmod +x /opt/worker/CsharpWorker
 
+${simServerSetup}
 ${barrierReady}
 
 # Run worker
@@ -726,6 +762,8 @@ ${uploadResult}
 
     case 'java':
       return `${logPreamble}
+${nodeInstall}
+
 # Install JDK 21
 apt-get update -qq && apt-get install -y -qq wget > /dev/null
 wget -q https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.tar.gz -O /tmp/jdk21.tar.gz
@@ -738,6 +776,7 @@ mkdir -p /opt/worker
 gsutil cp gs://${opts.bucket}/${opts.runId}/java-worker.jar /opt/worker/
 cd /opt/worker
 
+${simServerSetup}
 ${barrierReady}
 
 # Run worker

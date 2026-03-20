@@ -51,6 +51,9 @@ const GO_FILE = process.env.GO_FILE || '';
 // Aggregator URL for centralized pool exhaustion detection
 const AGGREGATOR_URL = process.env.AGGREGATOR_URL || '';
 
+// External HTTP sim server port (when provided, skip starting internal server)
+const EXTERNAL_HTTP_SIM_PORT = parseInt(process.env.HTTP_SIM_PORT || '0', 10);
+
 // ─── Per-worker metrics ──────────────────────────────────
 
 interface WorkerMetrics {
@@ -510,7 +513,12 @@ async function main() {
 
   let httpSimPort = 0;
   if (HANDLER_TYPE === 'http' && HANDLER_LATENCY_MS > 0) {
-    httpSimPort = await startHttpSimServer(HANDLER_LATENCY_MS);
+    if (EXTERNAL_HTTP_SIM_PORT > 0) {
+      httpSimPort = EXTERNAL_HTTP_SIM_PORT;
+      console.log(`[worker-process] Using external HTTP sim server on port ${httpSimPort}`);
+    } else {
+      httpSimPort = await startHttpSimServer(HANDLER_LATENCY_MS);
+    }
   }
 
   // Signal ready (barrier protocol)
