@@ -214,13 +214,14 @@ function applyViewState(state) {
   if (state.currentTab) {
     currentTab = state.currentTab;
     document.querySelectorAll('#view-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === currentTab));
-    document.getElementById('sidebar').classList.toggle('hidden', currentTab === 'comparison' || currentTab === 'insights');
-    comparisonControls.classList.toggle('hidden', currentTab === 'explorer' || currentTab === 'ab' || currentTab === 'insights');
+    document.getElementById('sidebar').classList.toggle('hidden', currentTab === 'comparison' || currentTab === 'insights' || currentTab === 'h2h');
+    comparisonControls.classList.toggle('hidden', currentTab === 'explorer' || currentTab === 'ab' || currentTab === 'insights' || currentTab === 'h2h');
     abControls.classList.toggle('hidden', currentTab !== 'ab');
     abContainer.classList.toggle('hidden', currentTab !== 'ab');
-    tableContainer.classList.toggle('hidden', currentTab === 'ab' || currentTab === 'insights');
+    tableContainer.classList.toggle('hidden', currentTab === 'ab' || currentTab === 'insights' || currentTab === 'h2h');
     document.getElementById('insights-container').classList.toggle('hidden', currentTab !== 'insights');
-    document.getElementById('metric-toggles').classList.toggle('hidden', currentTab === 'insights');
+    document.getElementById('h2h-container').classList.toggle('hidden', currentTab !== 'h2h');
+    document.getElementById('metric-toggles').classList.toggle('hidden', currentTab === 'insights' || currentTab === 'h2h');
   }
   if (state.currentOutputFormat) currentOutputFormat = state.currentOutputFormat;
   if (state.sortColumn) sortColumn = state.sortColumn;
@@ -412,15 +413,17 @@ async function init() {
     if (e.target.tagName !== 'BUTTON') return;
     currentTab = e.target.dataset.tab;
     document.querySelectorAll('#view-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === currentTab));
-    document.getElementById('sidebar').classList.toggle('hidden', currentTab === 'comparison' || currentTab === 'insights');
-    comparisonControls.classList.toggle('hidden', currentTab === 'explorer' || currentTab === 'ab' || currentTab === 'insights');
+    document.getElementById('sidebar').classList.toggle('hidden', currentTab === 'comparison' || currentTab === 'insights' || currentTab === 'h2h');
+    comparisonControls.classList.toggle('hidden', currentTab === 'explorer' || currentTab === 'ab' || currentTab === 'insights' || currentTab === 'h2h');
     abControls.classList.toggle('hidden', currentTab !== 'ab');
     abContainer.classList.toggle('hidden', currentTab !== 'ab');
-    tableContainer.classList.toggle('hidden', currentTab === 'ab' || currentTab === 'insights');
+    tableContainer.classList.toggle('hidden', currentTab === 'ab' || currentTab === 'insights' || currentTab === 'h2h');
     document.getElementById('insights-container').classList.toggle('hidden', currentTab !== 'insights');
-    document.getElementById('metric-toggles').classList.toggle('hidden', currentTab === 'insights');
-    outputSection.classList.toggle('hidden', currentTab === 'insights');
+    document.getElementById('h2h-container').classList.toggle('hidden', currentTab !== 'h2h');
+    document.getElementById('metric-toggles').classList.toggle('hidden', currentTab === 'insights' || currentTab === 'h2h');
+    outputSection.classList.toggle('hidden', currentTab === 'insights' || currentTab === 'h2h');
     if (currentTab === 'insights') renderInsights();
+    else if (currentTab === 'h2h') renderH2H();
     else renderTable();
     persistViewState();
   });
@@ -458,6 +461,10 @@ async function init() {
   // Heatmap controls
   document.getElementById('heatmap-handler').addEventListener('change', () => { if (currentTab === 'insights') renderHeatmaps(); });
   document.getElementById('heatmap-cluster').addEventListener('change', () => { if (currentTab === 'insights') renderHeatmaps(); });
+
+  // Head-to-Head controls
+  document.getElementById('h2h-select-a').addEventListener('change', () => { if (currentTab === 'h2h') renderH2H(); });
+  document.getElementById('h2h-select-b').addEventListener('change', () => { if (currentTab === 'h2h') renderH2H(); });
 
   buildMetricToggles();
 
@@ -962,6 +969,12 @@ function renderTable() {
   // Insights mode: render insights panels
   if (currentTab === 'insights') {
     renderInsights();
+    return;
+  }
+
+  // Head-to-Head mode
+  if (currentTab === 'h2h') {
+    renderH2H();
     return;
   }
 
@@ -2048,6 +2061,213 @@ function heatColor(t) {
   const g = Math.round(stops[lo][1] + (stops[hi][1] - stops[lo][1]) * frac);
   const b = Math.round(stops[lo][2] + (stops[hi][2] - stops[lo][2]) * frac);
   return `rgb(${r}, ${g}, ${b})`;
+}
+
+// ─── Head-to-Head Tab ────────────────────────────────────
+
+function renderH2H() {
+  if (enrichedData.length === 0) return;
+
+  const selectA = document.getElementById('h2h-select-a');
+  const selectB = document.getElementById('h2h-select-b');
+
+  // Discover all language+mode combos
+  const langModes = [...new Set(enrichedData.map((s) => `${s.sdkLanguage} / ${s.sdkMode}`))].sort();
+
+  // Populate dropdowns (preserve selection)
+  const prevA = selectA.value;
+  const prevB = selectB.value;
+  for (const sel of [selectA, selectB]) {
+    const prev = sel.value;
+    sel.innerHTML = '';
+    for (const lm of langModes) {
+      const opt = document.createElement('option');
+      opt.value = lm;
+      opt.textContent = lm;
+      sel.appendChild(opt);
+    }
+    // Restore or pick defaults
+    if (langModes.includes(prev)) sel.value = prev;
+  }
+  // Default: pick the top-2 from leaderboard if no prior selection
+  if (!prevA && !prevB && langModes.length >= 2) {
+    const { leaderboard } = computeWinners();
+    if (leaderboard.length >= 2) {
+      selectA.value = leaderboard[0].langMode;
+      selectB.value = leaderboard[1].langMode;
+    }
+  }
+
+  const candA = selectA.value;
+  const candB = selectB.value;
+
+  if (!candA || !candB || candA === candB) {
+    document.getElementById('h2h-summary').innerHTML =
+      '<p style="color: var(--text-muted); padding: 20px;">Select two different candidates to compare.</p>';
+    document.getElementById('h2h-body').innerHTML = '';
+    document.getElementById('h2h-strong-a-body').innerHTML = '';
+    document.getElementById('h2h-strong-b-body').innerHTML = '';
+    return;
+  }
+
+  // Build scenario matchups keyed by race dimensions
+  const raceDims = ['cluster', 'handlerType', 'totalWorkers', 'workersPerProcess'];
+
+  const dataA = new Map();
+  const dataB = new Map();
+  for (const s of enrichedData) {
+    const lm = `${s.sdkLanguage} / ${s.sdkMode}`;
+    const raceKey = raceDims.map((d) => s[d]).join('|');
+    if (lm === candA) dataA.set(raceKey, s);
+    else if (lm === candB) dataB.set(raceKey, s);
+  }
+
+  // Find all shared races
+  const matchups = [];
+  for (const [raceKey, rowA] of dataA) {
+    const rowB = dataB.get(raceKey);
+    if (!rowB) continue;
+    const tA = rowA.aggregateThroughput || 0;
+    const tB = rowB.aggregateThroughput || 0;
+    const diff = tA - tB;
+    const pct = tB > 0 ? ((tA - tB) / tB) * 100 : (tA > 0 ? 100 : 0);
+    matchups.push({
+      cluster: rowA.cluster,
+      handler: rowA.handlerType,
+      totalWorkers: rowA.totalWorkers,
+      wpp: rowA.workersPerProcess,
+      processes: rowA.processes,
+      throughputA: tA,
+      throughputB: tB,
+      diff,
+      pct,
+      winner: diff > 0 ? 'a' : diff < 0 ? 'b' : 'tie',
+    });
+  }
+
+  const winsA = matchups.filter((m) => m.winner === 'a').length;
+  const winsB = matchups.filter((m) => m.winner === 'b').length;
+  const ties = matchups.filter((m) => m.winner === 'tie').length;
+
+  // Summary cards
+  const summaryEl = document.getElementById('h2h-summary');
+  const shortA = candA.split(' / ');
+  const shortB = candB.split(' / ');
+  summaryEl.innerHTML = `
+    <div class="h2h-stat winner-a">
+      <div class="h2h-stat-value">${winsA}</div>
+      <div class="h2h-stat-label">${shortA[0]} ${shortA[1]} wins</div>
+    </div>
+    <div class="h2h-stat tie">
+      <div class="h2h-stat-value">${ties}</div>
+      <div class="h2h-stat-label">Ties</div>
+    </div>
+    <div class="h2h-stat winner-b">
+      <div class="h2h-stat-value">${winsB}</div>
+      <div class="h2h-stat-label">${shortB[0]} ${shortB[1]} wins</div>
+    </div>
+    <div class="h2h-stat">
+      <div class="h2h-stat-value">${matchups.length}</div>
+      <div class="h2h-stat-label">Scenarios compared</div>
+    </div>
+  `;
+
+  // Sort by absolute advantage (biggest margin first)
+  matchups.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+
+  // Render main matchup table
+  renderH2HTable(
+    document.getElementById('h2h-head'),
+    document.getElementById('h2h-body'),
+    matchups, candA, candB
+  );
+
+  // Strong suits — top 10 for each
+  const strongA = matchups.filter((m) => m.winner === 'a').sort((a, b) => b.diff - a.diff).slice(0, 10);
+  const strongB = matchups.filter((m) => m.winner === 'b').sort((a, b) => a.diff - b.diff).slice(0, 10);
+
+  document.getElementById('h2h-strong-a-title').textContent = `Strong Suit — ${candA}`;
+  document.getElementById('h2h-strong-b-title').textContent = `Strong Suit — ${candB}`;
+
+  renderH2HTable(
+    document.getElementById('h2h-strong-a-head'),
+    document.getElementById('h2h-strong-a-body'),
+    strongA, candA, candB
+  );
+  renderH2HTable(
+    document.getElementById('h2h-strong-b-head'),
+    document.getElementById('h2h-strong-b-body'),
+    strongB, candA, candB
+  );
+}
+
+function renderH2HTable(headEl, bodyEl, matchups, candA, candB) {
+  headEl.innerHTML = '';
+  bodyEl.innerHTML = '';
+
+  const cols = [
+    { label: '#', cls: '', style: 'width: 36px; text-align: center;' },
+    { label: 'Cluster', cls: '' },
+    { label: 'Handler', cls: '' },
+    { label: 'Workers', cls: 'num' },
+    { label: 'WPP', cls: 'num' },
+    { label: 'P', cls: 'num' },
+    { label: candA.split(' / ')[0], cls: 'num' },
+    { label: candB.split(' / ')[0], cls: 'num' },
+    { label: 'Δ ops/s', cls: 'num' },
+    { label: 'Δ %', cls: 'num' },
+    { label: 'Winner', cls: '' },
+  ];
+
+  for (const c of cols) {
+    const th = document.createElement('th');
+    th.textContent = c.label;
+    if (c.cls) th.className = c.cls;
+    if (c.style) th.style.cssText = c.style;
+    headEl.appendChild(th);
+  }
+
+  if (matchups.length === 0) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = cols.length;
+    td.style.cssText = 'padding: 20px; text-align: center; color: var(--text-muted);';
+    td.textContent = 'No matching scenarios';
+    tr.appendChild(td);
+    bodyEl.appendChild(tr);
+    return;
+  }
+
+  for (let i = 0; i < matchups.length; i++) {
+    const m = matchups[i];
+    const tr = document.createElement('tr');
+
+    const winnerName = m.winner === 'a' ? candA : m.winner === 'b' ? candB : 'Tie';
+    const winnerCls = m.winner === 'a' ? 'h2h-advantage-a' : m.winner === 'b' ? 'h2h-advantage-b' : 'h2h-tie';
+    const sign = m.diff > 0 ? '+' : '';
+
+    const cells = [
+      { text: String(i + 1), cls: 'rank' },
+      { text: m.cluster },
+      { text: m.handler },
+      { text: String(m.totalWorkers), cls: 'num' },
+      { text: String(m.wpp), cls: 'num' },
+      { text: String(m.processes), cls: 'num' },
+      { text: m.throughputA.toFixed(1), cls: 'num' },
+      { text: m.throughputB.toFixed(1), cls: 'num' },
+      { text: sign + m.diff.toFixed(1), cls: `num ${winnerCls}` },
+      { text: sign + m.pct.toFixed(1) + '%', cls: `num ${winnerCls}` },
+      { text: winnerName, cls: winnerCls },
+    ];
+
+    for (const c of cells) {
+      const td = document.createElement('td');
+      td.textContent = c.text;
+      if (c.cls) td.className = c.cls;
+      tr.appendChild(td);
+    }
+    bodyEl.appendChild(tr);
+  }
 }
 
 // ─── Boot ────────────────────────────────────────────────
