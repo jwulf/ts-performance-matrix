@@ -2003,7 +2003,7 @@ function renderHeatmaps() {
             // Color: interpolate from dark blue (cold) to red/orange (hot)
             const intensity = globalMax > 0 ? val / globalMax : 0;
             td.style.background = heatColor(intensity);
-            td.style.color = intensity > 0.6 ? '#000' : 'var(--text)';
+            td.style.color = intensity > 0.35 ? '#000' : 'var(--text)';
             td.title = `${val.toFixed(1)} ops/s | W=${w}, WPP=${wpp}, P=${w/wpp}`;
           } else {
             td.className = 'empty';
