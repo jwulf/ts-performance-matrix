@@ -2,6 +2,8 @@
 
 Performance envelope tool for Camunda 8 SDK worker scaling. Answers: **"For N total workers, what's the optimal split between processes and workers-per-process?"**
 
+**[View the hosted analysis dashboard →](https://jwulf.github.io/ts-performance-matrix)**
+
 Tests every valid combination of (TotalWorkers, WorkersPerProcess) across SDK languages, SDK modes, handler types, and cluster sizes — either locally with Docker or at scale on Google Cloud.
 
 ## Matrix dimensions
@@ -12,7 +14,7 @@ Tests every valid combination of (TotalWorkers, WorkersPerProcess) across SDK la
 | Total workers (W) | 10, 20, 50, 100 |
 | Workers per process (WPP) | 1, 2, 5, 10, 25, 50 |
 | SDK mode | `rest`, `rest-threaded`, `grpc-streaming`, `grpc-polling` |
-| Handler type | `cpu` (200ms busy-loop), `http` (200ms async wait) |
+| Handler type | `cpu` (20ms busy-loop), `http` (HTTP call with 20ms handler latency) |
 | Cluster | 1 broker, 3 brokers |
 
 **SDK modes:**
@@ -337,7 +339,7 @@ CONTROL
 4. **Spawn workers** — P processes, each running WPP workers sharing one SDK client
 5. **Barrier** — all processes signal READY, coordinator sends GO simultaneously
 6. **Continuous producer** — alongside the workers, a continuous producer keeps creating new process instances (concurrency 50) to prevent job starvation at high worker counts. Stops when the workers finish. Stats (created, errors, rate) are collected separately.
-7. **Execute** — each worker completes `target` jobs. Handler is either CPU-bound (sync return) or HTTP-simulated (200ms async delay). Server resource usage (CPU, memory, threads) is sampled via Prometheus gauges every 30s during execution.
+7. **Execute** — each worker completes `target` jobs. Handler is either CPU-bound (20ms sleep) or HTTP-bound (call to an HTTP server that has a 20ms delay). Server resource usage (CPU, memory, threads) is sampled via Prometheus gauges every 30s during execution.
 8. **Collect** — per-worker throughput, completions, errors. Compute aggregate throughput, Jain's fairness index, server-side Prometheus deltas, server resource usage (avg/peak), and continuous producer stats.
 9. **Report** — JSON result per scenario + markdown summary grouped by total workers
 
@@ -385,7 +387,19 @@ src/
   local-runner.ts       Local execution (Docker + child processes)
   gcp-runner.ts         GCP execution (Compute Engine VMs + GCS coordination)
   worker-process.ts     TypeScript worker — runs inside each process/VM
+  http-sim-server.ts    Shared Node.js HTTP sim server for http handler workloads
   ts-producer.ts        TypeScript producer — deploys BPMN + pre-creates instances
+  aggregator.py         Python aggregator for collecting results
+  analysis/
+    server.ts           Local analysis server (fetches from GCS, caches in /tmp)
+    data-loader.ts      Data fetching and caching logic
+    backfill-memory.ts  Backfill memory stats into cached run data
+    backfill-errors.ts  Backfill error categories into cached run data
+    public/             Static frontend (served locally or via GitHub Pages)
+      app.js            Client-side analysis UI (filtering, sorting, tables)
+      data-adapter.js   Adapter for local server vs GitHub Pages data fetching
+      index.html        Dashboard HTML
+      style.css         Dashboard styles
   workers/
     python-worker.py            Python worker (camunda-orchestration-sdk)
     python-producer.py          Python producer — deploys + pre-creates via SDK
@@ -398,14 +412,58 @@ src/
       src/main/java/Worker.java Java worker + producer (--produce flag)
 scripts/
   setup-control-plane.sh        Installs all toolchains on a GCP control plane VM
+  build-run-index.ts            Regenerates results/runs/index.json from committed run files
 docker/
   docker-compose.1broker.yaml   Single broker for local mode
   docker-compose.3broker.yaml   3-broker cluster for local mode
 fixtures/
   test-job-process.bpmn         Start → test-job ServiceTask → End
 pyproject.toml                  Python dependencies (managed by uv)
-results/                        Generated output (gitignored)
+results/
+  gcp/                          Raw GCP scenario results (gitignored)
+  runs/                         Committed run data for the hosted dashboard
+    index.json                  Run index (consumed by GitHub Pages adapter)
+    run-*.json                  Aggregated scenario data per run
+    run-*.meta.json             Run metadata (optional)
 ```
+
+## Analysis dashboard
+
+The analysis dashboard visualises run data with filtering, sorting, grouping, and A/B comparison across any matrix dimensions.
+
+### Hosted version (GitHub Pages)
+
+The dashboard is published at **https://jwulf.github.io/ts-performance-matrix** and reads committed run data from `results/runs/` in the repo.
+
+### Local server
+
+The local server can fetch run data directly from GCS (cached in `/tmp/analysis-cache/`), giving access to runs that haven't been committed yet:
+
+```bash
+npx tsx src/analysis/server.ts
+```
+
+Open http://localhost:3000. The local server supports live GCS fetching, SSE progress streaming, and backfill operations.
+
+### Publishing run data for the hosted version
+
+The hosted dashboard reads from `results/runs/` in the repo. To publish a run:
+
+```bash
+# 1. Copy cached run data into the repo
+cp /tmp/analysis-cache/run-TIMESTAMP.json results/runs/
+cp /tmp/analysis-cache/run-TIMESTAMP.meta.json results/runs/  # if exists
+
+# 2. Regenerate the index
+npx tsx scripts/build-run-index.ts
+
+# 3. Commit and push
+git add results/runs/
+git commit -m "chore: add run data for run-TIMESTAMP"
+git push
+```
+
+A CI workflow (`update-run-index.yml`) also auto-regenerates the index when run files are pushed.
 
 ## SDK packages
 

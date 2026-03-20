@@ -966,6 +966,12 @@ function renderTable() {
 
   // Header
   tableHead.innerHTML = '';
+  // Rank column header
+  const thRank = document.createElement('th');
+  thRank.textContent = '#';
+  thRank.style.cssText = 'width: 36px; text-align: center; color: var(--text-muted);';
+  tableHead.appendChild(thRank);
+
   // Copy column header (empty, narrow)
   const thCopy = document.createElement('th');
   thCopy.style.cssText = 'width: 28px; padding: 8px 2px;';
@@ -992,6 +998,7 @@ function renderTable() {
   // Body
   tableBody.innerHTML = '';
   let lastGroup = null;
+  let rank = 0;
 
   for (const row of sorted) {
     // Group separator
@@ -999,15 +1006,22 @@ function renderTable() {
       lastGroup = row[groupKey];
       const tr = document.createElement('tr');
       const td = document.createElement('td');
-      td.colSpan = dimCols.length + metricCols.length + 1; // +1 for copy column
+      td.colSpan = dimCols.length + metricCols.length + 2; // +1 for copy column, +1 for rank
       td.style.cssText = 'background: var(--surface2); font-weight: 600; padding: 8px 10px; color: var(--accent);';
       td.textContent = `${DIMENSIONS.find((d) => d.key === groupKey)?.label || groupKey}: ${lastGroup}`;
       tr.appendChild(td);
       tableBody.appendChild(tr);
     }
 
+    rank++;
     const tr = document.createElement('tr');
     tr.style.cursor = 'pointer';
+
+    // Rank cell
+    const tdRank = document.createElement('td');
+    tdRank.textContent = String(rank);
+    tdRank.style.cssText = 'text-align: center; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums;';
+    tr.appendChild(tdRank);
 
     // Copy ID button cell
     const tdCopy = document.createElement('td');
@@ -1088,7 +1102,7 @@ function renderABPanel(headEl, bodyEl, data, dimCols, metricCols, runId) {
   if (data.length === 0) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
-    td.colSpan = dimCols.length + metricCols.length;
+    td.colSpan = dimCols.length + metricCols.length + 1; // +1 for rank column
     td.style.cssText = 'padding: 40px; text-align: center; color: var(--text-muted);';
     td.textContent = runId ? 'No scenarios match current filters' : 'Select a run';
     tr.appendChild(td);
@@ -1108,6 +1122,11 @@ function renderABPanel(headEl, bodyEl, data, dimCols, metricCols, runId) {
   });
 
   // Header
+  const thRank = document.createElement('th');
+  thRank.textContent = '#';
+  thRank.style.cssText = 'width: 36px; text-align: center; color: var(--text-muted);';
+  headEl.appendChild(thRank);
+
   for (const dim of dimCols) {
     const th = document.createElement('th');
     th.textContent = dim.label;
@@ -1127,10 +1146,17 @@ function renderABPanel(headEl, bodyEl, data, dimCols, metricCols, runId) {
   }
 
   // Rows
+  let abRank = 0;
   for (const row of sorted) {
+    abRank++;
     const tr = document.createElement('tr');
     tr.style.cursor = 'pointer';
     tr.addEventListener('click', () => openScenarioPopover(row));
+
+    const tdRank = document.createElement('td');
+    tdRank.textContent = String(abRank);
+    tdRank.style.cssText = 'text-align: center; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums;';
+    tr.appendChild(tdRank);
 
     for (const dim of dimCols) {
       const td = document.createElement('td');
@@ -1188,8 +1214,9 @@ function renderABOutputPanel(contentEl, data, runId, side) {
     return sortAsc ? cmp : -cmp;
   });
 
-  const headers = [...dimCols.map((d) => d.label), ...metricCols.map((m) => m.label)];
-  const rows = sorted.map((row) => [
+  const headers = ['#', ...dimCols.map((d) => d.label), ...metricCols.map((m) => m.label)];
+  const rows = sorted.map((row, i) => [
+    String(i + 1),
     ...dimCols.map((d) => String(row[d.key])),
     ...metricCols.map((m) => m.format(getMetricValue(row, m.key))),
   ]);
@@ -1251,8 +1278,9 @@ function renderOutput() {
     return sortAsc ? cmp : -cmp;
   });
 
-  const headers = [...dimCols.map((d) => d.label), ...metricCols.map((m) => m.label)];
-  const rows = sorted.map((row) => [
+  const headers = ['#', ...dimCols.map((d) => d.label), ...metricCols.map((m) => m.label)];
+  const rows = sorted.map((row, i) => [
+    String(i + 1),
     ...dimCols.map((d) => String(row[d.key])),
     ...metricCols.map((m) => m.format(getMetricValue(row, m.key))),
   ]);
