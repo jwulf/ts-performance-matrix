@@ -63,6 +63,7 @@ let currentTab = 'explorer';
 let currentOutputFormat = 'html';
 let sortColumn = 'aggregateThroughput';
 let sortAsc = false;
+let abSyncRows = false;
 
 // Filter state: dimension key -> Set of selected values
 const filters = {};
@@ -92,6 +93,7 @@ function stateToHash(state) {
   if (state.sortColumn && state.sortColumn !== 'aggregateThroughput') p.set('sort', state.sortColumn);
   if (state.sortAsc) p.set('order', 'asc');
   if (state.groupBy) p.set('group', state.groupBy);
+  if (state.abSyncRows) p.set('sync', '1');
   // Filters: only encode dimensions where not all values are selected
   if (state.filters) {
     for (const dim of DIMENSIONS) {
@@ -130,6 +132,7 @@ function hashToState(hash) {
   if (p.has('sort')) state.sortColumn = p.get('sort');
   if (p.has('order')) state.sortAsc = p.get('order') === 'asc';
   if (p.has('group')) state.groupBy = p.get('group');
+  if (p.has('sync')) state.abSyncRows = p.get('sync') === '1';
   // Filters
   const filters = {};
   for (const [urlKey, dimKey] of Object.entries(URL_KEY_DIM)) {
@@ -198,6 +201,7 @@ function captureViewState() {
     currentOutputFormat,
     sortColumn,
     sortAsc,
+    abSyncRows,
     visibleMetrics: [...visibleMetrics],
     filters: filterState,
     groupBy: groupBySelect.value || '',
@@ -224,6 +228,10 @@ function applyViewState(state) {
   if (state.visibleMetrics) {
     visibleMetrics.clear();
     for (const k of state.visibleMetrics) visibleMetrics.add(k);
+  }
+  if (state.abSyncRows !== undefined) {
+    abSyncRows = state.abSyncRows;
+    document.getElementById('ab-sync-toggle').checked = abSyncRows;
   }
   // Filters will be restored after data loads (they depend on data values)
 }
@@ -434,6 +442,13 @@ async function init() {
       renderABOutput();
     });
   }
+
+  // A/B sync rows toggle
+  document.getElementById('ab-sync-toggle').addEventListener('change', (e) => {
+    abSyncRows = e.target.checked;
+    if (currentTab === 'ab') renderABPanels();
+    persistViewState();
+  });
 
   // Comparison controls
   groupBySelect.addEventListener('change', () => { renderTable(); persistViewState(); });
@@ -1102,8 +1117,13 @@ function renderABPanels() {
   const dimCols = DIMENSIONS;
   const metricCols = getMetrics().filter((m) => visibleMetrics.has(m.key));
 
-  renderABPanel(headA, bodyA, filteredData, dimCols, metricCols, runSelect.value);
-  renderABPanel(headB, bodyB, filteredDataB, dimCols, metricCols, runSelectB.value);
+  if (abSyncRows) {
+    renderABSynced(headA, bodyA, headB, bodyB, dimCols, metricCols);
+  } else {
+    teardownSyncedScroll();
+    renderABPanel(headA, bodyA, filteredData, dimCols, metricCols, runSelect.value);
+    renderABPanel(headB, bodyB, filteredDataB, dimCols, metricCols, runSelectB.value);
+  }
 
   // Hide the main output section in AB mode
   outputSection.classList.add('hidden');
@@ -1190,6 +1210,182 @@ function renderABPanel(headEl, bodyEl, data, dimCols, metricCols, runId) {
 
     bodyEl.appendChild(tr);
   }
+}
+
+/**
+ * Synced A/B rendering: align matching scenarios by scenarioId.
+ * Both panels get the same row order. Missing scenarios show as blank rows.
+ */
+function renderABSynced(headA, bodyA, headB, bodyB, dimCols, metricCols) {
+  // Build lookups by scenarioId
+  const mapA = new Map();
+  for (const s of filteredData) mapA.set(s.scenarioId, s);
+  const mapB = new Map();
+  for (const s of filteredDataB) mapB.set(s.scenarioId, s);
+
+  // Union of all scenario IDs
+  const allIds = [...new Set([...mapA.keys(), ...mapB.keys()])];
+
+  // Sort by the sort column using A-side values (fall back to B-side)
+  allIds.sort((idA, idB) => {
+    const rowA = mapA.get(idA) || mapB.get(idA);
+    const rowB = mapA.get(idB) || mapB.get(idB);
+    const va = rowA ? getMetricValue(rowA, sortColumn) : null;
+    const vb = rowB ? getMetricValue(rowB, sortColumn) : null;
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    const cmp = typeof va === 'string' ? va.localeCompare(vb) : va - vb;
+    return sortAsc ? cmp : -cmp;
+  });
+
+  // Render headers for both panels
+  for (const headEl of [headA, headB]) {
+    headEl.innerHTML = '';
+    const thRank = document.createElement('th');
+    thRank.textContent = '#';
+    thRank.style.cssText = 'width: 36px; text-align: center; color: var(--text-muted);';
+    headEl.appendChild(thRank);
+
+    for (const dim of dimCols) {
+      const th = document.createElement('th');
+      th.textContent = dim.label;
+      th.dataset.col = dim.key;
+      th.addEventListener('click', () => toggleSort(dim.key));
+      if (sortColumn === dim.key) th.className = sortAsc ? 'sorted-asc' : 'sorted-desc';
+      headEl.appendChild(th);
+    }
+    for (const m of metricCols) {
+      const th = document.createElement('th');
+      th.textContent = m.label;
+      th.className = 'num';
+      th.dataset.col = m.key;
+      th.addEventListener('click', () => toggleSort(m.key));
+      if (sortColumn === m.key) th.className = 'num ' + (sortAsc ? 'sorted-asc' : 'sorted-desc');
+      headEl.appendChild(th);
+    }
+  }
+
+  // Render synced rows
+  bodyA.innerHTML = '';
+  bodyB.innerHTML = '';
+  const totalCols = dimCols.length + metricCols.length + 1; // +1 for rank
+
+  for (let i = 0; i < allIds.length; i++) {
+    const scenarioId = allIds[i];
+    const rowA = mapA.get(scenarioId);
+    const rowB = mapB.get(scenarioId);
+    const unmatched = !rowA || !rowB; // one side is missing
+
+    bodyA.appendChild(buildSyncedRow(rowA, i + 1, dimCols, metricCols, totalCols, unmatched));
+    bodyB.appendChild(buildSyncedRow(rowB, i + 1, dimCols, metricCols, totalCols, unmatched));
+  }
+
+  if (allIds.length === 0) {
+    for (const bodyEl of [bodyA, bodyB]) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = totalCols;
+      td.style.cssText = 'padding: 40px; text-align: center; color: var(--text-muted);';
+      td.textContent = 'No scenarios match current filters';
+      tr.appendChild(td);
+      bodyEl.appendChild(tr);
+    }
+  }
+
+  // Sync scrolling between the two panels
+  setupSyncedScroll();
+}
+
+/** Active scroll listeners for synced A/B scrolling. */
+let _syncScrollCleanup = null;
+
+function setupSyncedScroll() {
+  teardownSyncedScroll();
+
+  const wrapA = document.querySelector('#ab-panel-a .ab-table-wrap');
+  const wrapB = document.querySelector('#ab-panel-b .ab-table-wrap');
+  if (!wrapA || !wrapB) return;
+
+  let isSyncing = false;
+
+  const syncA = () => {
+    if (isSyncing) return;
+    isSyncing = true;
+    wrapB.scrollTop = wrapA.scrollTop;
+    wrapB.scrollLeft = wrapA.scrollLeft;
+    isSyncing = false;
+  };
+
+  const syncB = () => {
+    if (isSyncing) return;
+    isSyncing = true;
+    wrapA.scrollTop = wrapB.scrollTop;
+    wrapA.scrollLeft = wrapB.scrollLeft;
+    isSyncing = false;
+  };
+
+  wrapA.addEventListener('scroll', syncA);
+  wrapB.addEventListener('scroll', syncB);
+
+  _syncScrollCleanup = () => {
+    wrapA.removeEventListener('scroll', syncA);
+    wrapB.removeEventListener('scroll', syncB);
+  };
+}
+
+function teardownSyncedScroll() {
+  if (_syncScrollCleanup) {
+    _syncScrollCleanup();
+    _syncScrollCleanup = null;
+  }
+}
+
+function buildSyncedRow(row, rank, dimCols, metricCols, totalCols, unmatched) {
+  const tr = document.createElement('tr');
+
+  if (!row) {
+    // Blank placeholder row — scenario missing from this run
+    tr.className = 'synced-missing';
+    const tdRank = document.createElement('td');
+    tdRank.textContent = String(rank);
+    tdRank.style.cssText = 'text-align: center; color: var(--text-muted); font-size: 12px; opacity: 0.4;';
+    tr.appendChild(tdRank);
+    for (let i = 0; i < dimCols.length + metricCols.length; i++) {
+      const td = document.createElement('td');
+      td.textContent = '—';
+      td.style.opacity = '0.3';
+      tr.appendChild(td);
+    }
+    return tr;
+  }
+
+  // Present but the other side is missing — dim this row
+  if (unmatched) tr.className = 'synced-unmatched';
+
+  tr.style.cursor = 'pointer';
+  tr.addEventListener('click', () => openScenarioPopover(row));
+
+  const tdRank = document.createElement('td');
+  tdRank.textContent = String(rank);
+  tdRank.style.cssText = 'text-align: center; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums;';
+  tr.appendChild(tdRank);
+
+  for (const dim of dimCols) {
+    const td = document.createElement('td');
+    td.textContent = String(row[dim.key]);
+    tr.appendChild(td);
+  }
+  for (const m of metricCols) {
+    const td = document.createElement('td');
+    td.className = 'num';
+    const val = getMetricValue(row, m.key);
+    td.textContent = m.format(val);
+    if (m.key === 'status') td.className = `status-${val}`;
+    tr.appendChild(td);
+  }
+
+  return tr;
 }
 
 // ─── A/B Output Rendering ────────────────────────────────
