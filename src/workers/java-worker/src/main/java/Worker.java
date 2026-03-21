@@ -231,12 +231,27 @@ public class Worker {
 
     // ─── Memory helper ───────────────────────────────────────
 
+    private static final long PAGE_SIZE = detectPageSize();
+
+    private static long detectPageSize() {
+        try {
+            var pb = new ProcessBuilder("getconf", "PAGE_SIZE");
+            pb.redirectErrorStream(true);
+            var proc = pb.start();
+            String output = new String(proc.getInputStream().readAllBytes()).trim();
+            proc.waitFor();
+            return Long.parseLong(output);
+        } catch (Exception e) {
+            return 4096L; // fallback for x86_64
+        }
+    }
+
     /** Read current process RSS from /proc/self/statm (Linux). Returns bytes, or 0 on failure. */
     static long readRssBytes() {
         try {
             String statm = Files.readString(Path.of("/proc/self/statm"));
             long rssPages = Long.parseLong(statm.trim().split("\\s+")[1]);
-            return rssPages * 4096L;
+            return rssPages * PAGE_SIZE;
         } catch (Exception e) {
             return 0L;
         }
