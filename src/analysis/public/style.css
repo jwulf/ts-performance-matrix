@@ -951,6 +951,25 @@ tr.synced-unmatched { opacity: 0.45; }
   font-size: 13px;
 }
 
+.leaderboard-split {
+  display: flex;
+  gap: 32px;
+  flex-wrap: wrap;
+}
+
+.leaderboard-panel {
+  flex: 1;
+  min-width: 300px;
+}
+
+.leaderboard-panel h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 .heatmap-grid {
   display: flex;
   flex-wrap: wrap;

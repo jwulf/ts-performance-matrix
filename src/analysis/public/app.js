@@ -1151,7 +1151,7 @@ function renderABPanel(headEl, bodyEl, data, dimCols, metricCols, runId) {
   if (data.length === 0) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
-    td.colSpan = dimCols.length + metricCols.length + 1; // +1 for rank column
+    td.colSpan = dimCols.length + metricCols.length + 2; // +1 rank, +1 copy
     td.style.cssText = 'padding: 40px; text-align: center; color: var(--text-muted);';
     td.textContent = runId ? 'No scenarios match current filters' : 'Select a run';
     tr.appendChild(td);
@@ -1175,6 +1175,10 @@ function renderABPanel(headEl, bodyEl, data, dimCols, metricCols, runId) {
   thRank.textContent = '#';
   thRank.style.cssText = 'width: 36px; text-align: center; color: var(--text-muted);';
   headEl.appendChild(thRank);
+
+  const thCopy = document.createElement('th');
+  thCopy.style.cssText = 'width: 32px;';
+  headEl.appendChild(thCopy);
 
   for (const dim of dimCols) {
     const th = document.createElement('th');
@@ -1206,6 +1210,25 @@ function renderABPanel(headEl, bodyEl, data, dimCols, metricCols, runId) {
     tdRank.textContent = String(abRank);
     tdRank.style.cssText = 'text-align: center; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums;';
     tr.appendChild(tdRank);
+
+    // Copy ID button
+    const tdCopy = document.createElement('td');
+    tdCopy.style.cssText = 'padding: 6px 2px; text-align: center;';
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'copy-id-btn';
+    copyBtn.innerHTML = '\u{1F4CB}';
+    const copyText = `${runId}/${row.scenarioId}`;
+    copyBtn.title = `Copy: ${copyText}`;
+    copyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      navigator.clipboard.writeText(copyText).then(() => {
+        copyBtn.classList.add('copied');
+        copyBtn.innerHTML = '\u2713';
+        setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.innerHTML = '\u{1F4CB}'; }, 1500);
+      });
+    });
+    tdCopy.appendChild(copyBtn);
+    tr.appendChild(tdCopy);
 
     for (const dim of dimCols) {
       const td = document.createElement('td');
@@ -1260,6 +1283,10 @@ function renderABSynced(headA, bodyA, headB, bodyB, dimCols, metricCols) {
     thRank.style.cssText = 'width: 36px; text-align: center; color: var(--text-muted);';
     headEl.appendChild(thRank);
 
+    const thCopy = document.createElement('th');
+    thCopy.style.cssText = 'width: 32px;';
+    headEl.appendChild(thCopy);
+
     for (const dim of dimCols) {
       const th = document.createElement('th');
       th.textContent = dim.label;
@@ -1282,7 +1309,7 @@ function renderABSynced(headA, bodyA, headB, bodyB, dimCols, metricCols) {
   // Render synced rows
   bodyA.innerHTML = '';
   bodyB.innerHTML = '';
-  const totalCols = dimCols.length + metricCols.length + 1; // +1 for rank
+  const totalCols = dimCols.length + metricCols.length + 2; // +1 rank, +1 copy
 
   for (let i = 0; i < allIds.length; i++) {
     const scenarioId = allIds[i];
@@ -1290,8 +1317,8 @@ function renderABSynced(headA, bodyA, headB, bodyB, dimCols, metricCols) {
     const rowB = mapB.get(scenarioId);
     const unmatched = !rowA || !rowB; // one side is missing
 
-    bodyA.appendChild(buildSyncedRow(rowA, i + 1, dimCols, metricCols, totalCols, unmatched));
-    bodyB.appendChild(buildSyncedRow(rowB, i + 1, dimCols, metricCols, totalCols, unmatched));
+    bodyA.appendChild(buildSyncedRow(rowA, i + 1, dimCols, metricCols, totalCols, unmatched, runSelect.value));
+    bodyB.appendChild(buildSyncedRow(rowB, i + 1, dimCols, metricCols, totalCols, unmatched, runSelectB.value));
   }
 
   if (allIds.length === 0) {
@@ -1354,7 +1381,7 @@ function teardownSyncedScroll() {
   }
 }
 
-function buildSyncedRow(row, rank, dimCols, metricCols, totalCols, unmatched) {
+function buildSyncedRow(row, rank, dimCols, metricCols, totalCols, unmatched, runId) {
   const tr = document.createElement('tr');
 
   if (!row) {
@@ -1364,7 +1391,7 @@ function buildSyncedRow(row, rank, dimCols, metricCols, totalCols, unmatched) {
     tdRank.textContent = String(rank);
     tdRank.style.cssText = 'text-align: center; color: var(--text-muted); font-size: 12px; opacity: 0.4;';
     tr.appendChild(tdRank);
-    for (let i = 0; i < dimCols.length + metricCols.length; i++) {
+    for (let i = 0; i < dimCols.length + metricCols.length + 1; i++) { // +1 for copy col
       const td = document.createElement('td');
       td.textContent = '—';
       td.style.opacity = '0.3';
@@ -1383,6 +1410,25 @@ function buildSyncedRow(row, rank, dimCols, metricCols, totalCols, unmatched) {
   tdRank.textContent = String(rank);
   tdRank.style.cssText = 'text-align: center; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums;';
   tr.appendChild(tdRank);
+
+  // Copy ID button
+  const tdCopy = document.createElement('td');
+  tdCopy.style.cssText = 'padding: 6px 2px; text-align: center;';
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'copy-id-btn';
+  copyBtn.innerHTML = '\u{1F4CB}';
+  const copyText = `${runId}/${row.scenarioId}`;
+  copyBtn.title = `Copy: ${copyText}`;
+  copyBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(copyText).then(() => {
+      copyBtn.classList.add('copied');
+      copyBtn.innerHTML = '\u2713';
+      setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.innerHTML = '\u{1F4CB}'; }, 1500);
+    });
+  });
+  tdCopy.appendChild(copyBtn);
+  tr.appendChild(tdCopy);
 
   for (const dim of dimCols) {
     const td = document.createElement('td');
@@ -1753,12 +1799,14 @@ function renderInsights() {
 /**
  * For each unique dimension combo (cluster, handler, totalWorkers, workersPerProcess),
  * find the language+mode with the highest throughput.
+ * @param {string} [handlerFilter] - Optional: 'cpu' or 'http' to restrict to one workload type.
  * Returns { winners: [{dims, winner, throughput, ...}], leaderboard: [{langMode, wins}] }
  */
-function computeWinners() {
+function computeWinners(handlerFilter) {
+  const data = handlerFilter ? enrichedData.filter((s) => s.handlerType === handlerFilter) : enrichedData;
   // Group scenarios by their "race" — same cluster + handler + totalWorkers + WPP
   const races = new Map();
-  for (const s of enrichedData) {
+  for (const s of data) {
     const key = `${s.cluster}|${s.handlerType}|${s.totalWorkers}|${s.workersPerProcess}`;
     if (!races.has(key)) races.set(key, []);
     races.get(key).push(s);
@@ -1806,56 +1854,58 @@ function computeWinners() {
 }
 
 function renderLeaderboard() {
-  const { leaderboard, winners } = computeWinners();
-  const totalRaces = winners.length;
+  for (const type of ['cpu', 'http']) {
+    const { leaderboard, winners } = computeWinners(type);
+    const totalRaces = winners.length;
 
-  const head = document.getElementById('leaderboard-head');
-  const body = document.getElementById('leaderboard-body');
-  head.innerHTML = '';
-  body.innerHTML = '';
+    const head = document.getElementById(`leaderboard-head-${type}`);
+    const body = document.getElementById(`leaderboard-body-${type}`);
+    head.innerHTML = '';
+    body.innerHTML = '';
 
-  const cols = ['#', 'Language + Mode', 'Wins', 'Win %', 'Trend'];
-  for (const c of cols) {
-    const th = document.createElement('th');
-    th.textContent = c;
-    if (c === '#') th.style.cssText = 'width: 36px; text-align: center;';
-    if (['Wins', 'Win %'].includes(c)) th.className = 'num';
-    head.appendChild(th);
-  }
+    const cols = ['#', 'Language + Mode', 'Wins', 'Win %', 'Trend'];
+    for (const c of cols) {
+      const th = document.createElement('th');
+      th.textContent = c;
+      if (c === '#') th.style.cssText = 'width: 36px; text-align: center;';
+      if (['Wins', 'Win %'].includes(c)) th.className = 'num';
+      head.appendChild(th);
+    }
 
-  for (let i = 0; i < leaderboard.length; i++) {
-    const { langMode, wins } = leaderboard[i];
-    const pct = totalRaces > 0 ? ((wins / totalRaces) * 100).toFixed(1) : '0';
-    const tr = document.createElement('tr');
+    for (let i = 0; i < leaderboard.length; i++) {
+      const { langMode, wins } = leaderboard[i];
+      const pct = totalRaces > 0 ? ((wins / totalRaces) * 100).toFixed(1) : '0';
+      const tr = document.createElement('tr');
 
-    const tdRank = document.createElement('td');
-    tdRank.className = 'rank';
-    tdRank.textContent = String(i + 1);
-    tr.appendChild(tdRank);
+      const tdRank = document.createElement('td');
+      tdRank.className = 'rank';
+      tdRank.textContent = String(i + 1);
+      tr.appendChild(tdRank);
 
-    const tdName = document.createElement('td');
-    tdName.className = 'winner';
-    tdName.textContent = langMode;
-    tr.appendChild(tdName);
+      const tdName = document.createElement('td');
+      tdName.className = 'winner';
+      tdName.textContent = langMode;
+      tr.appendChild(tdName);
 
-    const tdWins = document.createElement('td');
-    tdWins.className = 'num';
-    tdWins.textContent = String(wins);
-    tr.appendChild(tdWins);
+      const tdWins = document.createElement('td');
+      tdWins.className = 'num';
+      tdWins.textContent = String(wins);
+      tr.appendChild(tdWins);
 
-    const tdPct = document.createElement('td');
-    tdPct.className = 'num';
-    tdPct.textContent = pct + '%';
-    tr.appendChild(tdPct);
+      const tdPct = document.createElement('td');
+      tdPct.className = 'num';
+      tdPct.textContent = pct + '%';
+      tr.appendChild(tdPct);
 
-    // Mini bar
-    const tdBar = document.createElement('td');
-    const maxWins = leaderboard[0].wins;
-    const barWidth = maxWins > 0 ? (wins / maxWins) * 100 : 0;
-    tdBar.innerHTML = `<div style="background: var(--green); height: 8px; border-radius: 4px; width: ${barWidth}%; opacity: 0.7;"></div>`;
-    tr.appendChild(tdBar);
+      // Mini bar
+      const tdBar = document.createElement('td');
+      const maxWins = leaderboard[0].wins;
+      const barWidth = maxWins > 0 ? (wins / maxWins) * 100 : 0;
+      tdBar.innerHTML = `<div style="background: var(--green); height: 8px; border-radius: 4px; width: ${barWidth}%; opacity: 0.7;"></div>`;
+      tr.appendChild(tdBar);
 
-    body.appendChild(tr);
+      body.appendChild(tr);
+    }
   }
 }
 
@@ -1948,6 +1998,15 @@ function renderHeatmaps() {
     langModes.get(key).push(s);
   }
 
+  // Order heatmap cards by leaderboard ranking for this handler type
+  const { leaderboard } = computeWinners(handler);
+  const rankOrder = new Map(leaderboard.map((entry, idx) => [entry.langMode, idx]));
+  const sortedLangModes = [...langModes.entries()].sort((a, b) => {
+    const ra = rankOrder.has(a[0]) ? rankOrder.get(a[0]) : Infinity;
+    const rb = rankOrder.has(b[0]) ? rankOrder.get(b[0]) : Infinity;
+    return ra - rb;
+  });
+
   // Determine axis values across ALL language+modes for consistent axes
   const allWorkers = [...new Set(subset.map((s) => s.totalWorkers))].sort((a, b) => a - b);
   const allWPP = [...new Set(subset.map((s) => s.workersPerProcess))].sort((a, b) => a - b);
@@ -1958,12 +2017,13 @@ function renderHeatmaps() {
     if (s.aggregateThroughput > globalMax) globalMax = s.aggregateThroughput;
   }
 
-  for (const [langMode, scenarios] of langModes) {
+  for (const [langMode, scenarios] of sortedLangModes) {
     const card = document.createElement('div');
     card.className = 'heatmap-card';
 
     const h3 = document.createElement('h3');
-    h3.textContent = langMode;
+    const rank = rankOrder.has(langMode) ? rankOrder.get(langMode) + 1 : null;
+    h3.textContent = rank ? `#${rank} ${langMode}` : langMode;
     card.appendChild(h3);
 
     // Build lookup: (totalWorkers, wpp) -> throughput

@@ -129,11 +129,23 @@
       <div class="insights-container hidden" id="insights-container">
         <div class="insights-section" id="insights-leaderboard">
           <h2>Language + Mode Leaderboard</h2>
-          <p class="insights-desc">Ranked by the number of scenarios each language+mode wins on throughput across all dimension combinations.</p>
-          <table class="insights-table" id="leaderboard-table">
-            <thead><tr id="leaderboard-head"></tr></thead>
-            <tbody id="leaderboard-body"></tbody>
-          </table>
+          <p class="insights-desc">Ranked by the number of scenarios each language+mode wins on throughput across all dimension combinations, split by workload type.</p>
+          <div class="leaderboard-split">
+            <div class="leaderboard-panel">
+              <h3>CPU Workloads</h3>
+              <table class="insights-table" id="leaderboard-table-cpu">
+                <thead><tr id="leaderboard-head-cpu"></tr></thead>
+                <tbody id="leaderboard-body-cpu"></tbody>
+              </table>
+            </div>
+            <div class="leaderboard-panel">
+              <h3>HTTP Workloads</h3>
+              <table class="insights-table" id="leaderboard-table-http">
+                <thead><tr id="leaderboard-head-http"></tr></thead>
+                <tbody id="leaderboard-body-http"></tbody>
+              </table>
+            </div>
+          </div>
         </div>
         <div class="insights-section" id="insights-winners">
           <h2>Winners by Scenario</h2>
