@@ -1,5 +1,11 @@
 [
   {
+    "runId": "run-1773996884369",
+    "timestamp": 1773996884369,
+    "scenarios": 568,
+    "hasMeta": false
+  },
+  {
     "runId": "run-1773786419201",
     "timestamp": 1773786419201,
     "scenarios": 720,
